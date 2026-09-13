@@ -51,23 +51,23 @@ is preventive — nothing to clean up.)
 
 ## CORPUS_SYNC (growing-corpus backup) — IMPLEMENTED
 
-`CORPUS_SYNC=on` snapshots `$GOCACHE/fuzz` once per cycle to the private
-`keyorixhq/fuzz-corpus` repo's orphan branch `corpus/<project>`, force-pushed
-(disposable, size-bounded). Content-addressed files ⇒ cross-rig union is dedup by
-name. Destination chosen: **private GitHub repo** (most fail-proof — the push
-transport is already proven from every rig; atomic ref update; HA off-site).
+`CORPUS_SYNC=on` mirrors `$GOCACHE/fuzz` once per cycle into `corpus/<project>/`
+on the **`main`** branch of the private `keyorixhq/fuzz-corpus` repo (crashers go
+to `crashers/<project>/` on the same branch). Everything on one branch — no
+corpus branches, no PRs. Each rig writes only its own subtree and pushes with
+fetch/reset retry (disjoint subtrees never clobber). Content-addressed files ⇒
+git dedups unchanged inputs across commits; cross-rig merge is dedup by name.
 `keyorixhq/fuzz-corpus` is **private with Actions disabled**, so it stores corpus
 without consuming any CI minutes.
 
-### ⚠️ One prerequisite: PAT scope
+### Credentials — per-rig SSH deploy keys (DONE)
 
-The vCD rigs authenticate to GitHub with a **fine-grained PAT scoped to
-keyorix + dashdiag only**. Until that PAT is widened to include
-`keyorixhq/fuzz-corpus` (read/write contents), corpus + crasher pushes will fail
-— **non-fatally**: reproducers are still kept locally and notified, corpus sync
-just logs and retries next cycle. The disclosure fix (no public push) takes
-effect immediately on cutover regardless; centralization activates once the PAT
-covers the corpus repo. Same for the pve `libs` rig's credentials.
+Each rig has a dedicated write deploy key on `fuzz-corpus`, isolated behind SSH
+host alias `github-fuzzcorpus` (`migration/provision-deploy-key.sh`); confs use
+`CORPUS_REPO=git@github-fuzzcorpus:keyorixhq/fuzz-corpus.git`. Org deploy-key
+policy was enabled; all three keys registered (`ro=false`) and verified
+(`git ls-remote` rc=0). The keyorix/dashdiag PAT is left untouched. pve is live
+and pushing; the vCD rigs push once cut over.
 
 ## Cutover (needs sudo — run by Andrei)
 
