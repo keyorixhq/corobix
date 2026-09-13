@@ -32,14 +32,20 @@ setup() {
 
 # --- effective_crash_mode ----------------------------------------------------
 
-@test "git + pr stays pr" {
+@test "git + pr stays pr (public PR allowed for own code)" {
   SOURCE_MODE=git CRASH_MODE=pr
   run effective_crash_mode
   [ "$output" = "pr" ]
 }
 
-@test "standalone + pr is forced to local (disclosure guard)" {
-  SOURCE_MODE=standalone CRASH_MODE=pr
+@test "standalone + pr downgrades to private when CORPUS_REPO is set" {
+  SOURCE_MODE=standalone CRASH_MODE=pr CORPUS_REPO=git@github.com:keyorixhq/fuzz-corpus.git
+  run effective_crash_mode
+  [ "$output" = "private" ]
+}
+
+@test "standalone + pr downgrades to local when no CORPUS_REPO" {
+  SOURCE_MODE=standalone CRASH_MODE=pr CORPUS_REPO=
   run effective_crash_mode
   [ "$output" = "local" ]
 }
@@ -48,6 +54,18 @@ setup() {
   SOURCE_MODE=standalone CRASH_MODE=pr ALLOW_PR_FOR_STANDALONE=1
   run effective_crash_mode
   [ "$output" = "pr" ]
+}
+
+@test "private stays private for standalone" {
+  SOURCE_MODE=standalone CRASH_MODE=private CORPUS_REPO=git@github.com:keyorixhq/fuzz-corpus.git
+  run effective_crash_mode
+  [ "$output" = "private" ]
+}
+
+@test "private stays private for git" {
+  SOURCE_MODE=git CRASH_MODE=private CORPUS_REPO=git@github.com:keyorixhq/fuzz-corpus.git
+  run effective_crash_mode
+  [ "$output" = "private" ]
 }
 
 @test "standalone + local stays local" {

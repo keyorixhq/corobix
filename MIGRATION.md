@@ -37,24 +37,37 @@ functionally the same as dashdiag/the universal runner streaming crashers to a
 a real single-point-of-loss (box death / cache eviction ⇒ re-fuzz from seeds),
 and the motivation for the CORPUS_SYNC feature below.
 
-Migration consequence: keyorix has **no corpus-growth feature to lose**. Both
-rigs are clean to cut over now; the only keyorix change is crashers land as a
-**PR** (review-gated) instead of a branch push — an improvement.
+Migration consequence: keyorix has **no corpus-growth feature to lose**.
 
-## Planned: universal CORPUS_SYNC (growing-corpus backup) — NEW capability
+## Disclosure posture change: own-code crashers go PRIVATE (implemented)
 
-Opt-in `fuzz.conf` block: on a cadence (default once/cycle, not per-target),
-snapshot `$GOCACHE/fuzz` to a durable destination; Go corpus files are
-content-addressed (hash filenames) so cross-rig merge is a dedup-by-name union.
+Own-code crashers previously went **public** (dashdiag PRs / keyorix's
+`fuzz-corpus` branch push) — an unfixed vuln disclosed before the fix. All rigs
+now use **`CRASH_MODE=private`**: the reproducer is kept locally *and* pushed to
+the private **`keyorixhq/fuzz-corpus`** repo (`crashers/<project>/...`), never a
+public PR. It becomes a public regression test only after the fix ships. (No
+crashers exist today and no public crasher branch/PR was ever created, so this
+is preventive — nothing to clean up.)
 
-- **Disclosure hard rule**: for `SOURCE_MODE=standalone` (third-party libs) the
-  destination MUST be private — an interesting-corpus input is a
-  near-coverage-boundary input for someone else's undisclosed code. Same logic
-  as the forced `CRASH_MODE=local`. Default off; if enabled for standalone,
-  force a private target and refuse a public one.
-- **Mechanism (decision)**: rsync/tar snapshot to object store or NAS
-  (recommended — no git bloat, trivial union for 175M of tiny files) vs a
-  force-pushed orphan `fuzz-corpus-cache` branch (in-repo, but history bloat).
+## CORPUS_SYNC (growing-corpus backup) — IMPLEMENTED
+
+`CORPUS_SYNC=on` snapshots `$GOCACHE/fuzz` once per cycle to the private
+`keyorixhq/fuzz-corpus` repo's orphan branch `corpus/<project>`, force-pushed
+(disposable, size-bounded). Content-addressed files ⇒ cross-rig union is dedup by
+name. Destination chosen: **private GitHub repo** (most fail-proof — the push
+transport is already proven from every rig; atomic ref update; HA off-site).
+`keyorixhq/fuzz-corpus` is **private with Actions disabled**, so it stores corpus
+without consuming any CI minutes.
+
+### ⚠️ One prerequisite: PAT scope
+
+The vCD rigs authenticate to GitHub with a **fine-grained PAT scoped to
+keyorix + dashdiag only**. Until that PAT is widened to include
+`keyorixhq/fuzz-corpus` (read/write contents), corpus + crasher pushes will fail
+— **non-fatally**: reproducers are still kept locally and notified, corpus sync
+just logs and retries next cycle. The disclosure fix (no public push) takes
+effect immediately on cutover regardless; centralization activates once the PAT
+covers the corpus repo. Same for the pve `libs` rig's credentials.
 
 ## Cutover (needs sudo — run by Andrei)
 

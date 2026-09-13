@@ -46,14 +46,33 @@ For a long-lived rig, run it under systemd — see `templates/fuzz-rig.service.t
 6. Self-reload: at the top of each cycle, if `fuzz.conf` changed or the target
    set changed, `exec` itself (resuming from the saved rotation position).
 
-## Crash handling: `local` vs `pr`
+## Crash handling: `local` / `private` / `pr`
 
-- `local` — move the reproducer into `FINDINGS_DIR/<Func>/<ts>/` and notify.
-  Nothing is published. **This is forced for `SOURCE_MODE=standalone`**
-  (third-party libraries) unless `ALLOW_PR_FOR_STANDALONE=1`, because a crash in
-  someone else's library is potential-0-day disclosure material, not a PR.
-- `pr` — re-sync, commit the reproducer (DCO `--signoff`) to `CORPUS_BRANCH`,
-  push, and open a PR against `GIT_BRANCH`. For our own repos in `git` mode.
+A reproducer is **always** copied to `FINDINGS_DIR/<Func>/<ts>/` first, so a
+push failure can never lose it. Then, by `CRASH_MODE`:
+
+- `private` (recommended) — push the reproducer to the **private** `CORPUS_REPO`
+  under `crashers/<project>/<pkg>/<Func>/<ts>/` (append-only) and notify. Keeps
+  an unfixed vuln — our own code *or* a third-party library — out of public view
+  until the fix ships; the reproducer becomes a public regression test only
+  after the bug is fixed. Non-fatal if the push fails (kept local + notified).
+- `local` — findings dir + notify only. Nothing leaves the box.
+- `pr` — **PUBLIC**: commit the reproducer (DCO `--signoff`) to `CORPUS_BRANCH`,
+  push, open a PR against `GIT_BRANCH`. Only for own code you're willing to
+  disclose immediately. **Refused for `SOURCE_MODE=standalone`** (third-party) —
+  downgraded to `private` (if `CORPUS_REPO` set) else `local`, unless
+  `ALLOW_PR_FOR_STANDALONE=1`.
+
+## Corpus backup (`CORPUS_SYNC`)
+
+With `CORPUS_SYNC=on`, once per rotation cycle the runner snapshots
+`$GOCACHE/fuzz` (the growing "interesting" corpus — weeks of accumulated
+coverage inputs, otherwise only ever on one box) to the private `CORPUS_REPO`'s
+orphan branch `corpus/<project>`, force-pushed (disposable, size-bounded cache).
+Corpus files are content-addressed, so merging snapshots across rigs is a
+dedup-by-name union. **The destination must be private** — an interesting-corpus
+input is a near-coverage-boundary input, sensitive for undisclosed third-party
+code. Non-fatal.
 
 ## Configuration
 
@@ -63,19 +82,23 @@ All keys are set in `fuzz.conf`. Only `MODULE_DIR` is required.
 |-----|---------|---------|
 | `MODULE_DIR` | *(required)* | Go module root to fuzz. |
 | `SOURCE_MODE` | `standalone` | `git` (sync a repo each cycle) or `standalone` (fuzz the tree as-is). |
-| `CRASH_MODE` | `local` | `local` (private findings) or `pr` (open a PR). Forced to `local` for `standalone`. |
-| `ALLOW_PR_FOR_STANDALONE` | `0` | Set `1` to allow `pr` mode on a standalone module (rare; overrides the disclosure guard). |
+| `CRASH_MODE` | `local` | `local` / `private` (push to `CORPUS_REPO`) / `pr` (public PR). `pr` refused for `standalone`. |
+| `ALLOW_PR_FOR_STANDALONE` | `0` | Set `1` to allow public `pr` mode on a standalone module (rare; overrides the disclosure guard). |
+| `CORPUS_SYNC` | `off` | `on` backs up `$GOCACHE/fuzz` to `CORPUS_REPO` once per cycle. |
+| `CORPUS_REPO` | — | Private git repo for crashers (private mode) and corpus snapshots. |
+| `CORPUS_PROJECT` | `basename $MODULE_DIR` | Namespace under the corpus repo (`keyorix`/`dashdiag`/`libs`). |
 | `DEFAULT_FUZZTIME` | `15m` | Per-target fuzztime when no override is set. |
 | `DURATION_<Func>` | — | Per-target fuzztime override, e.g. `DURATION_FuzzVerifyReceipt=3h`. |
 | `PARALLEL` | `4` | `go test -parallel`. |
 | `GIT_REMOTE` / `GIT_BRANCH` | `origin` / `main` | Sync source (git mode). |
-| `CORPUS_BRANCH` | `fuzz/corpus-updates` | Branch for crash-reproducer PRs (pr mode). |
+| `CORPUS_BRANCH` | `fuzz/corpus-updates` | Branch for public crash-reproducer PRs (`pr` mode only). |
+| `GIT_AUTHOR` / `GIT_EMAIL` | `Andrei Beshkov` / `andrey.beshkov@gmail.com` | Author for rig-made commits. |
 | `STATE_DIR` / `LOG_DIR` / `FINDINGS_DIR` | `$MODULE_DIR-{state,logs,findings}` | Working dirs. |
 | `NOTIFY_URL` | — | Optional; `curl -d <msg>` fired on crash. |
 | `FETCH_RETRIES` / `FETCH_BACKOFF` | `5` / `10` | git-mode fetch retry/backoff (linear). |
 
-See `examples/` for `standalone` (libs), `git`+`pr` (dashdiag), and
-`git`+`pr`+overrides (keyorix) configs.
+See `examples/` for `standalone`+`private` (libs), and `git`+`private`(+overrides)
+for dashdiag / keyorix.
 
 ## Testing
 
