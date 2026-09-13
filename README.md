@@ -78,6 +78,17 @@ destination must be private** — an interesting-corpus input is a
 near-coverage-boundary input, sensitive for undisclosed third-party code.
 Non-fatal.
 
+## Saturation report (`SATURATION_REPORT`)
+
+With `SATURATION_REPORT=on`, the runner records each target's per-run
+new-interesting count and — at most once per `SATURATION_REPORT_INTERVAL` — pushes
+a digest to `NOTIFY_URL` summing the last `SATURATION_WINDOW` runs per target
+(`SATURATED (+0 over N runs)` / `active (+K over N runs)` / `warming`). This is
+**advisory only**: it never drops or deweights a target — a human reads it and
+decides whether to add something to `EXCLUDE`. Deliberately not automatic:
+coverage plateaus break, and a crash can surface at flat coverage, so "stopped
+growing" is not a safe signal to stop fuzzing on its own.
+
 ## Configuration
 
 All keys are set in `fuzz.conf`. Only `MODULE_DIR` is required.
@@ -92,6 +103,9 @@ All keys are set in `fuzz.conf`. Only `MODULE_DIR` is required.
 | `CORPUS_REPO` | — | Private git repo for crashers (private mode) and corpus snapshots. |
 | `CORPUS_PROJECT` | `basename $MODULE_DIR` | Namespace under the corpus repo (`keyorix`/`dashdiag`/`libs`). |
 | `EXCLUDE` | — | Space-separated `Fuzz*` func names to drop from rotation (e.g. a saturated target on a pinned lib). Whole-name match. |
+| `SATURATION_REPORT` | `off` | `on` pushes a periodic per-target growth digest to `NOTIFY_URL` (advisory; never excludes). |
+| `SATURATION_REPORT_INTERVAL` | `21600` | Min seconds between digests (default 6h). |
+| `SATURATION_WINDOW` | `10` | Recent runs the verdict sums over. |
 | `DEFAULT_FUZZTIME` | `15m` | Per-target fuzztime when no override is set. |
 | `DURATION_<Func>` | — | Per-target fuzztime override, e.g. `DURATION_FuzzVerifyReceipt=3h`. |
 | `PARALLEL` | `4` | `go test -parallel`. |

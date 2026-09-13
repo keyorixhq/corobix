@@ -107,3 +107,20 @@ setup() {
   result="$(printf 'p|FuzzJWTParseIDToken\n' | EXCLUDE='FuzzJWT' filter_targets)"
   [ "$result" = "p|FuzzJWTParseIDToken" ]
 }
+
+# --- sat_verdict -------------------------------------------------------------
+
+@test "sat_verdict: fewer than 3 runs is warming" {
+  run sat_verdict 2 0
+  [ "$output" = "warming (2 runs)" ]
+}
+
+@test "sat_verdict: 3+ runs with zero growth is SATURATED" {
+  run sat_verdict 10 0
+  [ "$output" = "SATURATED (+0 over 10 runs)" ]
+}
+
+@test "sat_verdict: 3+ runs with growth is active" {
+  run sat_verdict 5 7
+  [ "$output" = "active (+7 over 5 runs)" ]
+}

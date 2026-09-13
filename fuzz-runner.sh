@@ -118,6 +118,48 @@ push_crasher_private() {
   push_to_main "crash($CORPUS_PROJECT/$CRASH_FN): reproducer $CRASH_TS"
 }
 
+# --- saturation report (advisory only; never excludes anything) --------------
+# sat_verdict <count> <sum> -> classification string for a target's recent runs.
+sat_verdict() {
+  local n="$1" s="$2"
+  if [ "$n" -lt 3 ]; then echo "warming ($n runs)"
+  elif [ "$s" -eq 0 ]; then echo "SATURATED (+0 over $n runs)"
+  else echo "active (+$s over $n runs)"
+  fi
+}
+
+# record_saturation <fn> -> append this run's final "new interesting" count to a
+# per-target history file, trimmed to the last SATURATION_WINDOW runs.
+record_saturation() {
+  [ "${SATURATION_REPORT:-off}" = on ] || return 0
+  local fn="$1" k f
+  f="$STATE_DIR/sat/$fn"; mkdir -p "$STATE_DIR/sat"
+  k="$(grep -aoE 'new interesting: [0-9]+' "$LOG_DIR/$fn.log" 2>/dev/null | tail -1 | grep -oE '[0-9]+$')"
+  [ -n "$k" ] || return 0
+  echo "$k" >> "$f"
+  tail -n "${SATURATION_WINDOW:-10}" "$f" > "$STATE_DIR/sat.$fn.tmp" 2>/dev/null && mv "$STATE_DIR/sat.$fn.tmp" "$f"
+}
+
+# saturation_report -> once per SATURATION_REPORT_INTERVAL, push a per-target
+# growth digest to NOTIFY_URL so a human can decide whether to EXCLUDE anything.
+# Reports only — it never changes rotation.
+saturation_report() {
+  { [ "${SATURATION_REPORT:-off}" = on ] && [ -n "${NOTIFY_URL:-}" ]; } || return 0
+  [ -d "$STATE_DIR/sat" ] || return 0
+  local now last stamp="$STATE_DIR/last-sat-report" msg f fn n s
+  now="$(date +%s)"; last="$(cat "$stamp" 2>/dev/null || echo 0)"
+  [ "$(( now - last ))" -ge "${SATURATION_REPORT_INTERVAL:-21600}" ] || return 0
+  msg="saturation ($CORPUS_PROJECT):"
+  for f in "$STATE_DIR"/sat/*; do
+    [ -e "$f" ] || continue
+    fn="$(basename "$f")"
+    n="$(awk 'END{print NR+0}' "$f")"; s="$(awk '{t+=$1} END{print t+0}' "$f")"
+    msg="$msg
+  $fn: $(sat_verdict "$n" "$s")"
+  done
+  notify "$msg"; echo "$now" > "$stamp"; log "saturation report sent"
+}
+
 handle_crash() { # $1=fn $2=pkg $3=rc ; called only when a real reproducer exists
   local fn="$1" pkg="$2" rc="$3" ts src dest mode
   ts="$(date -u +%Y%m%dT%H%M%SZ)"; mode="$(effective_crash_mode)"
@@ -162,6 +204,7 @@ main() {
   : "${CORPUS_BRANCH:=fuzz/corpus-updates}"; : "${NOTIFY_URL:=}"; : "${FETCH_RETRIES:=5}"; : "${FETCH_BACKOFF:=10}"
   : "${CORPUS_SYNC:=off}"; : "${CORPUS_REPO:=}"; : "${CORPUS_PROJECT:=$(basename "$MODULE_DIR")}"; : "${EXCLUDE:=}"
   : "${GIT_AUTHOR:=Andrei Beshkov}"; : "${GIT_EMAIL:=andrey.beshkov@gmail.com}"
+  : "${SATURATION_REPORT:=off}"; : "${SATURATION_REPORT_INTERVAL:=21600}"; : "${SATURATION_WINDOW:=10}"
   local eff; eff="$(effective_crash_mode)"
   [ "$eff" = "${CRASH_MODE}" ] || echo "fuzz-runner: crash mode $CRASH_MODE -> $eff for standalone module (disclosure safety)" >&2
   CRASH_MODE="$eff"
@@ -185,6 +228,7 @@ main() {
     if [ "$i" -eq 0 ]; then
       [ "$SOURCE_MODE" = "git" ] && sync_main
       sync_corpus
+      saturation_report
       mapfile -t NEW < <(discover | sort | filter_targets)
       if [ "${#NEW[@]}" -gt 0 ] && [ "${NEW[*]}" != "${TARGETS[*]}" ]; then
         log "target set changed (${#TARGETS[@]} -> ${#NEW[@]}) — reloading"; exec "$0" "$@"
@@ -203,6 +247,7 @@ main() {
     elif [ "$rc" -ne 0 ]; then
       log "$fn exited $rc with no reproducer — infra/timeout, logged not alerted"
     fi
+    record_saturation "$fn"
     i=$(( (i+1) % ${#TARGETS[@]} ))
   done
 }
