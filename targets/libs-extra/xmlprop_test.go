@@ -33,29 +33,43 @@ func xmlTokens(data []byte) ([]xml.Token, error) {
 func FuzzXMLRoundtripProperty(f *testing.F) {
 	f.Add([]byte(`<a x="1"><b>text</b></a>`))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		if xmlvalidator.Validate(bytes.NewReader(data)) != nil {
-			return
-		}
-		t1, e1 := xmlTokens(data)
-		if e1 != nil {
-			return
-		}
-		var buf bytes.Buffer
-		enc := xml.NewEncoder(&buf)
-		for _, tok := range t1 {
-			if err := enc.EncodeToken(tok); err != nil {
+		// Work runs under the per-input deadline; the t.Fatal assertions stay OUTSIDE
+		// the guarded closure — t.Fatal only fires on the test's own goroutine, not
+		// the child goroutine withinDeadline runs fn in.
+		var (
+			checked    bool
+			n1, n2     int
+			reparseErr error
+		)
+		withinDeadline(t, func() {
+			if xmlvalidator.Validate(bytes.NewReader(data)) != nil {
 				return
 			}
-		}
-		if err := enc.Flush(); err != nil {
+			t1, e1 := xmlTokens(data)
+			if e1 != nil {
+				return
+			}
+			var buf bytes.Buffer
+			enc := xml.NewEncoder(&buf)
+			for _, tok := range t1 {
+				if err := enc.EncodeToken(tok); err != nil {
+					return
+				}
+			}
+			if err := enc.Flush(); err != nil {
+				return
+			}
+			t2, e2 := xmlTokens(buf.Bytes())
+			checked, n1, n2, reparseErr = true, len(t1), len(t2), e2
+		})
+		if !checked {
 			return
 		}
-		t2, e2 := xmlTokens(buf.Bytes())
-		if e2 != nil {
-			t.Fatalf("validator passed but re-encoded form fails to re-parse: %v (data=%q)", e2, data)
+		if reparseErr != nil {
+			t.Fatalf("validator passed but re-encoded form fails to re-parse: %v (data=%q)", reparseErr, data)
 		}
-		if len(t1) != len(t2) {
-			t.Fatalf("validator passed non-round-trip-stable XML: %d vs %d tokens (data=%q)", len(t1), len(t2), data)
+		if n1 != n2 {
+			t.Fatalf("validator passed non-round-trip-stable XML: %d vs %d tokens (data=%q)", n1, n2, data)
 		}
 	})
 }

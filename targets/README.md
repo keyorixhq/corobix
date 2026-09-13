@@ -23,6 +23,29 @@ beside the code they exercise — they can't live here (internal packages).
   output succeeds," never byte-idempotence — XML normalization (e.g. the `&#xd;` CR
   reference) legitimately changes on round-trip and is not a bug.
 
+## Per-input deadline (enforced)
+
+Native `go test -fuzz` has **no per-input timeout**, so a CPU-time / algorithmic-
+complexity DoS input only drags throughput — it is never flagged as a crasher. Every
+target therefore routes its `f.Fuzz` body through the shared `withinDeadline` helper
+(goroutine + `select` on a fixed **2s** budget). Keep any `t.Fatal` assertions
+*outside* the guarded closure — `t.Fatal` only fires on the test's own goroutine, not
+the child goroutine `withinDeadline` runs the work in.
+
+`scripts/require-deadline.sh` makes this enforceable so an unguarded target cannot
+land: it checks that every `func Fuzz*` calls `withinDeadline`, and that each module
+keeps the canonical helper with the uniform 2s budget (the modules are separate, so
+the helper is copied — this guards against drift). Pure bash/awk/grep; no Go toolchain
+needed, so it runs on a bare rig or in the local gate.
+
+```sh
+scripts/require-deadline.sh          # lint every module under targets/
+bats tests/require-deadline.bats     # its own unit tests
+```
+
+A target that genuinely cannot use the deadline (e.g. a replay-only smoke target that
+does no parsing) must carry a `//fuzzlint:no-deadline: <reason>` line inside the
+function to document the exception.
 ## Not in this repo (by design)
 - `fuzz.conf` — per-rig config (ntfy URL, corpus remote, `EXCLUDE`, durations): box-local, gitignored.
 - `testdata/fuzz/` — generated corpus + crash reproducers: backed up to the private `fuzz-corpus` repo.
