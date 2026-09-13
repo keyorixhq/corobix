@@ -102,7 +102,7 @@ All keys are set in `fuzz.conf`. Only `MODULE_DIR` is required.
 | `CORPUS_SYNC` | `off` | `on` backs up `$GOCACHE/fuzz` to `CORPUS_REPO` once per cycle. |
 | `CORPUS_REPO` | — | Private git repo for crashers (private mode) and corpus snapshots. |
 | `CORPUS_PROJECT` | `basename $MODULE_DIR` | Namespace under the corpus repo (`keyorix`/`dashdiag`/`libs`). |
-| `EXCLUDE` | — | Space-separated `Fuzz*` func names to drop from rotation (e.g. a saturated target on a pinned lib). Whole-name match. |
+| `EXCLUDE` | — | Space-separated `Fuzz*` func names to drop from rotation (e.g. a saturated target on a pinned lib). Whole-name match. **Quote it when listing more than one** (`EXCLUDE="FuzzA FuzzB"`) — the conf is sourced as shell. |
 | `SATURATION_REPORT` | `off` | `on` pushes a periodic per-target growth digest to `NOTIFY_URL` (advisory; never excludes). |
 | `SATURATION_REPORT_INTERVAL` | `21600` | Min seconds between digests (default 6h). |
 | `SATURATION_WINDOW` | `10` | Recent runs the verdict sums over. |
