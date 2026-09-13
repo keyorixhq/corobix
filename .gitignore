@@ -1,0 +1,6 @@
+# Local rig config and working dirs are never committed.
+fuzz.conf
+*-state/
+*-logs/
+*-findings/
+*.log

@@ -1,0 +1,69 @@
+#!/usr/bin/env bats
+# Unit tests for the pure functions in fuzz-runner.sh.
+# The runner returns before main() when FUZZ_RUNNER_LIB is set, so we can source
+# it to get the functions without launching a rotation.
+
+setup() {
+  FUZZ_RUNNER_LIB=1 source "${BATS_TEST_DIRNAME}/../fuzz-runner.sh"
+}
+
+# --- resolve_duration --------------------------------------------------------
+
+@test "resolve_duration falls back to DEFAULT_FUZZTIME when no override" {
+  DEFAULT_FUZZTIME=15m
+  run resolve_duration FuzzSomething
+  [ "$status" -eq 0 ]
+  [ "$output" = "15m" ]
+}
+
+@test "resolve_duration uses a per-target DURATION_<fn> override" {
+  DEFAULT_FUZZTIME=1h
+  DURATION_FuzzVerifyReceipt=3h
+  run resolve_duration FuzzVerifyReceipt
+  [ "$output" = "3h" ]
+}
+
+@test "resolve_duration override applies only to the named target" {
+  DEFAULT_FUZZTIME=1h
+  DURATION_FuzzVerifyReceipt=3h
+  run resolve_duration FuzzOther
+  [ "$output" = "1h" ]
+}
+
+# --- effective_crash_mode ----------------------------------------------------
+
+@test "git + pr stays pr" {
+  SOURCE_MODE=git CRASH_MODE=pr
+  run effective_crash_mode
+  [ "$output" = "pr" ]
+}
+
+@test "standalone + pr is forced to local (disclosure guard)" {
+  SOURCE_MODE=standalone CRASH_MODE=pr
+  run effective_crash_mode
+  [ "$output" = "local" ]
+}
+
+@test "standalone + pr + ALLOW_PR_FOR_STANDALONE=1 stays pr" {
+  SOURCE_MODE=standalone CRASH_MODE=pr ALLOW_PR_FOR_STANDALONE=1
+  run effective_crash_mode
+  [ "$output" = "pr" ]
+}
+
+@test "standalone + local stays local" {
+  SOURCE_MODE=standalone CRASH_MODE=local
+  run effective_crash_mode
+  [ "$output" = "local" ]
+}
+
+@test "git + local stays local" {
+  SOURCE_MODE=git CRASH_MODE=local
+  run effective_crash_mode
+  [ "$output" = "local" ]
+}
+
+@test "crash mode defaults to local when unset" {
+  SOURCE_MODE=git
+  run effective_crash_mode
+  [ "$output" = "local" ]
+}

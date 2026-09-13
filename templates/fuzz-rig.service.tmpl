@@ -1,0 +1,33 @@
+# systemd unit template for a fuzz-harness rig.
+# Substitute the {{...}} placeholders and drop into /etc/systemd/system/,
+# then: systemctl daemon-reload && systemctl enable --now <name>.service
+#
+# Notes:
+#  - MemoryMax MUST sit below physical RAM and MemorySwapMax=0, so a runaway
+#    target is OOM-killed inside the cgroup instead of thrashing the host.
+#  - Restart=always keeps the rig up across crashes and reboots; the runner
+#    resumes mid-rotation from its saved position.
+#  - snap-installed Go escapes the service cgroup unless the real toolchain is
+#    on PATH; use /usr/local/go/bin (or /snap/go/current/bin for snap Go).
+[Unit]
+Description={{DESCRIPTION}}
+After=network.target
+
+[Service]
+Type=simple
+User={{USER}}
+Environment=HOME={{HOME}}
+Environment=PATH=/usr/local/go/bin:/usr/bin:/bin
+Environment=GOPATH={{HOME}}/go
+Environment=GOMODCACHE={{HOME}}/go/pkg/mod
+Environment=GOCACHE={{HOME}}/.cache/go-build
+Environment=GOTOOLCHAIN=auto
+Environment=FUZZ_CONF={{FUZZ_CONF}}
+ExecStart={{RUNNER_PATH}}
+Restart=always
+RestartSec=10
+MemoryMax={{MEMORY_MAX}}
+MemorySwapMax=0
+
+[Install]
+WantedBy=multi-user.target
