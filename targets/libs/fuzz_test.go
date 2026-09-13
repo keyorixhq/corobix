@@ -12,6 +12,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	stdasn1 "encoding/asn1"
 	"encoding/base64"
 	"math/big"
 	"net/url"
@@ -163,5 +164,36 @@ func FuzzWebAuthnXASN1(f *testing.F) {
 			var s ecdsaSig
 			_, _ = xasn1.Unmarshal(data, &s)
 		})
+	})
+}
+
+// FuzzXASN1Differential — DIFFERENTIAL oracle for the ASN.1 signature decoder.
+// Parses the same SEQUENCE{INTEGER,INTEGER} with go-webauthn/x's decoder AND Go's
+// crypto/asn1. When BOTH accept the input, they must decode the SAME (R,S) values;
+// a value disagreement means the two decoders read identical bytes as different
+// signature integers — a real, security-relevant parsing discrepancy (signature
+// confusion). Accept/reject disagreement is NOT flagged: xasn1 is BER-lenient and
+// crypto/asn1 is DER-strict, so one accepting what the other rejects is expected,
+// not a bug — comparing only on mutual success is what keeps this false-positive-free.
+func FuzzXASN1Differential(f *testing.F) {
+	f.Add([]byte{0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01})
+	f.Add([]byte{0x30, 0x08, 0x02, 0x02, 0x00, 0x80, 0x02, 0x02, 0x7f, 0xff})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		var xs, gs ecdsaSig
+		var xerr, gerr error
+		withinDeadline(t, func() {
+			_, xerr = xasn1.Unmarshal(data, &xs)
+			_, gerr = stdasn1.Unmarshal(data, &gs)
+		})
+		if xerr != nil || gerr != nil {
+			return // BER-vs-DER leniency: accept/reject differences are expected.
+		}
+		if xs.R == nil || xs.S == nil || gs.R == nil || gs.S == nil {
+			return
+		}
+		if xs.R.Cmp(gs.R) != 0 || xs.S.Cmp(gs.S) != 0 {
+			t.Fatalf("ASN.1 decoder disagreement on (R,S): xasn1=(%s,%s) crypto/asn1=(%s,%s) data=%x",
+				xs.R, xs.S, gs.R, gs.S, data)
+		}
 	})
 }
