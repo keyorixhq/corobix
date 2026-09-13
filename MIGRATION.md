@@ -6,7 +6,7 @@ universal `fuzz-runner.sh`. Prepared 2026-09-13.
 | box | old runner | module | mem cap | current model |
 |-----|-----------|--------|---------|---------------|
 | `vcd-dashdiag-fuzz` | `dashdiag/scripts/fuzz-continuous.sh` | `/home/andrei/proj/dashdiag` | 6500M | auto-discover all, uniform 15m, crashers→PR |
-| `vcd-keyorix-fuzz` | `keyorix/scripts/fuzzing/run-rotation.sh` | `/opt/keyorix-fuzz/keyorix` | 5500M | curated `targets.conf`, tuned durations, crashers→PR, **+ corpus→`fuzz-corpus` branch** |
+| `vcd-keyorix-fuzz` | `keyorix/scripts/fuzzing/run-rotation.sh` | `/opt/keyorix-fuzz/keyorix` | 5500M | curated `targets.conf`, tuned durations, crashers→`fuzz-corpus` branch |
 
 ## Validation done (non-destructive)
 
@@ -22,29 +22,39 @@ universal `fuzz-runner.sh`. Prepared 2026-09-13.
 - Corpus is safe either way: native fuzz corpus lives in `GOCACHE`
   (`~/.cache/go-build/fuzz`, ~175–178M each) and is untouched by the cutover.
 
-## ⚠️ keyorix decision: corpus-branch persistence
+## Corpus persistence: what each rig actually does (corrected)
 
-The keyorix rig alone continuously commits its **growing corpus** to a
-`fuzz-corpus` git branch (worktree `/opt/keyorix-fuzz/keyorix-fuzz-corpus`, via
-`config.env`'s `FUZZ_CORPUS_WORKTREE`). The universal runner does **not** do
-this — it persists only *crash reproducers* (→ PR), like dashdiag. Migrating
-keyorix as-is means the continuous off-box corpus backup stops (the corpus stays
-locally in GOCACHE and in the 2026-09-13 Mac archive, but is no longer streamed
-to a branch).
+Earlier notes claimed keyorix "streams its growing corpus" — that was wrong.
+keyorix's `sync-corpus.sh` rsyncs only `*/testdata/fuzz/` dirs (i.e. **crash
+reproducers**) to the `fuzz-corpus` branch; its own comment: *"Non-crashing
+'new interesting' corpus stays in the local build cache (`$GOCACHE/fuzz`) and is
+never written into the tree."* So keyorix streams **crashers to a branch**,
+functionally the same as dashdiag/the universal runner streaming crashers to a
+**PR** — just a different delivery channel.
 
-At current saturation (~90%+, corpus growth on the asymptotic tail, 0 crashers)
-the marginal value of continuous corpus streaming is low. Options:
+**No rig backs up the growing (interesting) corpus off-box.** It lives only in
+`$GOCACHE/fuzz` (~175–178M/box) plus the one-off 2026-09-13 Mac archive. This is
+a real single-point-of-loss (box death / cache eviction ⇒ re-fuzz from seeds),
+and the motivation for the CORPUS_SYNC feature below.
 
-- **A — dashdiag now, hold keyorix**: cut over dashdiag (clean, zero feature
-  loss); keep keyorix on its bespoke runner until the universal runner grows a
-  corpus-sync feature. No regression.
-- **B — migrate both now, accept the gap**: simplest end state (one runner
-  everywhere); keyorix loses continuous corpus-branch backup. Acceptable given
-  saturation + the Mac archive.
-- **C — add corpus-sync to the runner first, then migrate both**: no regression,
-  true superset, but a new runner feature to build + test.
+Migration consequence: keyorix has **no corpus-growth feature to lose**. Both
+rigs are clean to cut over now; the only keyorix change is crashers land as a
+**PR** (review-gated) instead of a branch push — an improvement.
 
-Recommendation: **A now, then C** (build corpus-sync, then migrate keyorix).
+## Planned: universal CORPUS_SYNC (growing-corpus backup) — NEW capability
+
+Opt-in `fuzz.conf` block: on a cadence (default once/cycle, not per-target),
+snapshot `$GOCACHE/fuzz` to a durable destination; Go corpus files are
+content-addressed (hash filenames) so cross-rig merge is a dedup-by-name union.
+
+- **Disclosure hard rule**: for `SOURCE_MODE=standalone` (third-party libs) the
+  destination MUST be private — an interesting-corpus input is a
+  near-coverage-boundary input for someone else's undisclosed code. Same logic
+  as the forced `CRASH_MODE=local`. Default off; if enabled for standalone,
+  force a private target and refuse a public one.
+- **Mechanism (decision)**: rsync/tar snapshot to object store or NAS
+  (recommended — no git bloat, trivial union for 175M of tiny files) vs a
+  force-pushed orphan `fuzz-corpus-cache` branch (in-repo, but history bloat).
 
 ## Cutover (needs sudo — run by Andrei)
 
@@ -66,7 +76,7 @@ systemctl status dashdiag-fuzz.service --no-pager | head
 journalctl -u dashdiag-fuzz.service -n 40 --no-pager     # expect "discovered 55 target(s)"
 ```
 
-### keyorix (only if choosing option B)
+### keyorix (also clean — crashers move from a branch push to a PR)
 
 ```sh
 ssh vcd-keyorix-fuzz
@@ -102,8 +112,8 @@ drop-in fully restores the previous rig.
 
 Once both rigs run green on the universal runner for a full cycle:
 
-- keyorix: PR removing `scripts/fuzzing/run-rotation.sh` + `targets.conf` (and
-  the `keyorix-fuzz` corpus-sync bits) — **only if option B/C chosen**.
+- keyorix: PR removing `scripts/fuzzing/run-rotation.sh`, `targets.conf`, and
+  `sync-corpus.sh` (its crasher→branch mechanism is superseded by crasher→PR).
 - dashdiag: PR removing `scripts/fuzz-continuous.sh` (keep `fuzz-discover.sh` —
   the Makefile/CI still use it).
 
