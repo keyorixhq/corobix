@@ -65,14 +65,18 @@ push failure can never lose it. Then, by `CRASH_MODE`:
 
 ## Corpus backup (`CORPUS_SYNC`)
 
-With `CORPUS_SYNC=on`, once per rotation cycle the runner snapshots
-`$GOCACHE/fuzz` (the growing "interesting" corpus — weeks of accumulated
-coverage inputs, otherwise only ever on one box) to the private `CORPUS_REPO`'s
-orphan branch `corpus/<project>`, force-pushed (disposable, size-bounded cache).
-Corpus files are content-addressed, so merging snapshots across rigs is a
-dedup-by-name union. **The destination must be private** — an interesting-corpus
-input is a near-coverage-boundary input, sensitive for undisclosed third-party
-code. Non-fatal.
+With `CORPUS_SYNC=on`, once per rotation cycle the runner mirrors `$GOCACHE/fuzz`
+(the growing "interesting" corpus — weeks of accumulated coverage inputs,
+otherwise only ever on one box) into `corpus/<project>/` on the private
+`CORPUS_REPO`'s **`main`** branch. Everything lives on `main` — corpus under
+`corpus/<project>/`, crashers under `crashers/<project>/` — so it's all in one
+place with no branches or PRs to chase. Each rig writes only its own subtree and
+pushes with fetch/reset retry, so concurrent rigs (disjoint subtrees) never
+clobber each other. Corpus files are content-addressed, so git dedups unchanged
+files across commits and cross-rig merge is a dedup-by-name union. **The
+destination must be private** — an interesting-corpus input is a
+near-coverage-boundary input, sensitive for undisclosed third-party code.
+Non-fatal.
 
 ## Configuration
 

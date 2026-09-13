@@ -50,56 +50,61 @@ discover() {    # emit "pkg|Func"; drift-proof (same go test -list CI uses)
   done < <(go list ./... 2>/dev/null)
 }
 
-# sync_corpus: off-box backup of the growing (interesting) corpus. Snapshots
-# $GOCACHE/fuzz to the private CORPUS_REPO's orphan branch corpus/<project>,
-# force-pushed (disposable, size-bounded cache — no history). Non-fatal, and only
-# when CORPUS_SYNC=on. Called once per rotation cycle, never per-target.
-sync_corpus() {
-  [ "${CORPUS_SYNC:-off}" = "on" ] || return 0
-  [ -n "${CORPUS_REPO:-}" ] || { log "CORPUS_SYNC=on but CORPUS_REPO unset — skipping"; return 0; }
-  local gc wd br sz
-  gc="$(go env GOCACHE 2>/dev/null)/fuzz"
-  [ -d "$gc" ] || { log "corpus sync: no $gc yet — nothing to back up"; return 0; }
-  wd="$STATE_DIR/corpus-cache"; br="corpus/$CORPUS_PROJECT"
-  rm -rf "$wd"; mkdir -p "$wd/corpus"
+# Everything the rigs back up lives on CORPUS_REPO's main branch — corpus under
+# corpus/<project>/, crashers under crashers/<project>/ — so it's all visible in
+# one place with no branches or PRs. A persistent working clone is kept in
+# STATE_DIR; each write resets to origin/main, re-stages this rig's own subtree,
+# commits and pushes with fetch/reset retry so concurrent rigs (disjoint
+# subtrees) never clobber each other. All non-fatal.
+STAGE_FN=""   # name of the staging callback push_to_main runs inside its retry loop
+push_to_main() { # $1=commit message ; runs "$STAGE_FN" after each reset to (re)stage
+  local msg="$1" wd a; wd="$STATE_DIR/corpus-main"
+  [ -n "${CORPUS_REPO:-}" ] || { log "corpus: CORPUS_REPO unset — skipping ($msg)"; return 0; }
+  if [ ! -d "$wd/.git" ]; then
+    git clone -q "$CORPUS_REPO" "$wd" 2>/dev/null || { log "corpus: clone of $CORPUS_REPO failed (non-fatal)"; return 0; }
+  fi
   ( cd "$wd" || exit 0
-    git init -q -b "$br"; git remote add origin "$CORPUS_REPO"
-    rsync -a --delete "$gc"/ ./corpus/ 2>/dev/null
-    git add -A
-    git -c user.name="$GIT_AUTHOR" -c user.email="$GIT_EMAIL" \
-      commit -q -s -m "corpus($CORPUS_PROJECT): snapshot $(date -u +%FT%TZ)" 2>/dev/null \
-      || { log "corpus sync: nothing to commit"; exit 0; }
-    sz="$(du -sh "$gc" 2>/dev/null | cut -f1)"
-    if git push -q -f origin "$br" 2>/dev/null; then
-      log "corpus sync: pushed $br ($sz)"
-    else
-      log "corpus sync: push to $br failed (non-fatal — will retry next cycle)"
-    fi
+    for a in 1 2 3 4 5; do
+      if ! { git fetch origin main -q 2>/dev/null && git reset --hard origin/main -q 2>/dev/null; }; then
+        log "corpus: fetch/reset failed ($a/5)"; sleep 2; continue
+      fi
+      "$STAGE_FN" || { log "corpus: staging failed for '$msg'"; exit 0; }
+      git add -A
+      git diff --cached --quiet && exit 0   # nothing changed — no-op
+      git -c user.name="$GIT_AUTHOR" -c user.email="$GIT_EMAIL" commit -q -s -m "$msg" 2>/dev/null || exit 0
+      git push -q origin main 2>/dev/null && { log "corpus: pushed to main — $msg"; exit 0; }
+      log "corpus: main push race ($a/5) — retrying"; sleep 1
+    done
+    log "corpus: main push retries exhausted (non-fatal) — $msg"
   )
-  rm -rf "$wd"
 }
 
-# push_crasher_private: copy a reproducer into the private CORPUS_REPO main under
-# crashers/<project>/<pkg>/<fn>/<ts>/ and push (append-only, retry on races).
-# Non-fatal — the reproducer is always also kept locally by the caller.
+# sync_corpus: back up the growing (interesting) corpus to corpus/<project>/ on
+# main, once per rotation cycle. rsync --delete mirrors $GOCACHE/fuzz so the tree
+# tracks the live corpus (git dedups unchanged content-addressed files).
+_stage_corpus() {
+  local proj="corpus/$CORPUS_PROJECT"
+  mkdir -p "$proj"; rsync -a --delete "$CORPUS_GC"/ "$proj"/ 2>/dev/null
+}
+sync_corpus() {
+  [ "${CORPUS_SYNC:-off}" = "on" ] || return 0
+  CORPUS_GC="$(go env GOCACHE 2>/dev/null)/fuzz"
+  [ -d "$CORPUS_GC" ] || { log "corpus sync: no $CORPUS_GC yet — nothing to back up"; return 0; }
+  STAGE_FN=_stage_corpus
+  push_to_main "corpus($CORPUS_PROJECT): snapshot $(date -u +%FT%TZ)"
+}
+
+# push_crasher_private: append a reproducer to crashers/<project>/<pkg>/<fn>/<ts>/
+# on main. Non-fatal — the caller always keeps a local FINDINGS_DIR copy too.
+_stage_crasher() {
+  local dest="crashers/$CORPUS_PROJECT/${CRASH_PKG//\//_}/$CRASH_FN/$CRASH_TS"
+  mkdir -p "$dest"; cp -a "$CRASH_SRC"/. "$dest"/ 2>/dev/null
+}
 push_crasher_private() {
-  local fn="$1" pkg="$2" ts="$3" srcdir="$4" wd dest a
-  [ -n "${CORPUS_REPO:-}" ] || { log "CRASH $fn: private mode but CORPUS_REPO unset — kept local only"; return 0; }
-  wd="$STATE_DIR/corpus-crashers"; dest="crashers/$CORPUS_PROJECT/${pkg//\//_}/$fn/$ts"
-  [ -d "$wd/.git" ] || git clone -q --depth 1 "$CORPUS_REPO" "$wd" 2>/dev/null \
-    || { log "CRASH $fn: corpus clone failed — kept local only"; return 0; }
-  ( cd "$wd" || exit 0
-    for a in 1 2 3; do
-      git fetch origin main -q 2>/dev/null && git reset --hard origin/main -q 2>/dev/null
-      mkdir -p "$dest"; cp -a "$srcdir"/. "$dest"/ 2>/dev/null
-      git add -A
-      git -c user.name="$GIT_AUTHOR" -c user.email="$GIT_EMAIL" \
-        commit -q -s -m "crash($CORPUS_PROJECT/$fn): reproducer $ts" 2>/dev/null || { exit 0; }
-      git push -q origin main 2>/dev/null && { log "CRASH $fn: pushed to $CORPUS_REPO ($dest)"; exit 0; }
-      log "CRASH $fn: push race ($a/3) — retrying"
-    done
-    log "CRASH $fn: private push retries exhausted — kept local"
-  )
+  CRASH_FN="$1" CRASH_PKG="$2" CRASH_TS="$3" CRASH_SRC="$4"
+  [ -n "$CRASH_SRC" ] || { log "CRASH $CRASH_FN: no reproducer dir — kept local only"; return 0; }
+  STAGE_FN=_stage_crasher
+  push_to_main "crash($CORPUS_PROJECT/$CRASH_FN): reproducer $CRASH_TS"
 }
 
 handle_crash() { # $1=fn $2=pkg $3=rc ; called only when a real reproducer exists
