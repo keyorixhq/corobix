@@ -18,7 +18,7 @@ heavier" triggers in the Keyorix project doc
 For pure-Go / CGO-free code the libFuzzer sanitizer advantage (ASan/MSan/UBSan)
 does not apply, and the native engine needs no build plumbing, ships in the
 toolchain, and shares the same corpus format everywhere. Discovery uses the
-same `go test -list '^Fuzz'` the CI job uses, so the rig can never silently
+same `go test -list '^Fuzz'` the runner uses, so the rig can never silently
 drift out of sync with the target set (a hardcoded list once missed 18 of 44
 targets — this design removes that failure mode).
 
@@ -124,11 +124,10 @@ for dashdiag / keyorix.
 `fuzz-runner.sh` sources cleanly for unit testing via the `FUZZ_RUNNER_LIB`
 hook (it `return`s before `main` when that variable is set). Pure functions
 (`resolve_duration`, `effective_crash_mode`) are covered by `tests/*.bats`.
-CI runs `shellcheck` + `bats` on every push (`.github/workflows/ci.yml`).
+Hosted CI is disabled for this repo — run the checks locally before every PR:
 
 ```sh
-shellcheck fuzz-runner.sh
-bats tests/
+./scripts/check.sh    # shellcheck fuzz-runner.sh + bats tests/ + go vet targets/*
 ```
 
 ## Layout
@@ -138,5 +137,6 @@ fuzz-runner.sh                     the runner
 examples/{libs,dashdiag,keyorix}.conf
 templates/fuzz-rig.service.tmpl    systemd unit template
 tests/runner.bats                  unit tests for the pure functions
-.github/workflows/ci.yml           shellcheck + bats
+scripts/check.sh                   local pre-PR gate (shellcheck + bats + go vet)
+targets/{libs,libs-extra}/         standalone third-party-lib fuzz target modules
 ```
