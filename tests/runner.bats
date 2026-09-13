@@ -85,3 +85,25 @@ setup() {
   run effective_crash_mode
   [ "$output" = "local" ]
 }
+
+# --- filter_targets ----------------------------------------------------------
+
+@test "filter_targets passes everything through when EXCLUDE is empty" {
+  result="$(printf 'p|FuzzA\np|FuzzB\n' | EXCLUDE='' filter_targets)"
+  [ "$result" = "$(printf 'p|FuzzA\np|FuzzB')" ]
+}
+
+@test "filter_targets drops an excluded func" {
+  result="$(printf 'p|FuzzA\np|FuzzB\np|FuzzC\n' | EXCLUDE='FuzzB' filter_targets)"
+  [ "$result" = "$(printf 'p|FuzzA\np|FuzzC')" ]
+}
+
+@test "filter_targets drops multiple excluded funcs" {
+  result="$(printf 'p|FuzzA\np|FuzzB\np|FuzzC\n' | EXCLUDE='FuzzA FuzzC' filter_targets)"
+  [ "$result" = "p|FuzzB" ]
+}
+
+@test "filter_targets matches whole func names only (no prefix match)" {
+  result="$(printf 'p|FuzzJWTParseIDToken\n' | EXCLUDE='FuzzJWT' filter_targets)"
+  [ "$result" = "p|FuzzJWTParseIDToken" ]
+}

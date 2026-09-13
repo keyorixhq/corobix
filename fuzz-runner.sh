@@ -50,6 +50,17 @@ discover() {    # emit "pkg|Func"; drift-proof (same go test -list CI uses)
   done < <(go list ./... 2>/dev/null)
 }
 
+# filter_targets: drop any "pkg|Func" whose Func is listed in $EXCLUDE
+# (space-separated Fuzz func names) — e.g. a saturated target on a pinned lib.
+filter_targets() {
+  local line fn
+  while IFS= read -r line; do
+    fn="${line##*|}"
+    case " ${EXCLUDE:-} " in *" $fn "*) continue ;; esac
+    printf '%s\n' "$line"
+  done
+}
+
 # Everything the rigs back up lives on CORPUS_REPO's main branch — corpus under
 # corpus/<project>/, crashers under crashers/<project>/ — so it's all visible in
 # one place with no branches or PRs. A persistent working clone is kept in
@@ -149,7 +160,7 @@ main() {
   : "${DEFAULT_FUZZTIME:=15m}"; : "${PARALLEL:=4}"; : "${CRASH_MODE:=local}"
   : "${STATE_DIR:=$MODULE_DIR-state}"; : "${LOG_DIR:=$MODULE_DIR-logs}"; : "${FINDINGS_DIR:=$MODULE_DIR-findings}"
   : "${CORPUS_BRANCH:=fuzz/corpus-updates}"; : "${NOTIFY_URL:=}"; : "${FETCH_RETRIES:=5}"; : "${FETCH_BACKOFF:=10}"
-  : "${CORPUS_SYNC:=off}"; : "${CORPUS_REPO:=}"; : "${CORPUS_PROJECT:=$(basename "$MODULE_DIR")}"
+  : "${CORPUS_SYNC:=off}"; : "${CORPUS_REPO:=}"; : "${CORPUS_PROJECT:=$(basename "$MODULE_DIR")}"; : "${EXCLUDE:=}"
   : "${GIT_AUTHOR:=Andrei Beshkov}"; : "${GIT_EMAIL:=andrey.beshkov@gmail.com}"
   local eff; eff="$(effective_crash_mode)"
   [ "$eff" = "${CRASH_MODE}" ] || echo "fuzz-runner: crash mode $CRASH_MODE -> $eff for standalone module (disclosure safety)" >&2
@@ -159,7 +170,7 @@ main() {
   cd "$MODULE_DIR" || { echo "fuzz-runner: MODULE_DIR not found: $MODULE_DIR" >&2; exit 1; }
 
   [ "$SOURCE_MODE" = "git" ] && sync_main
-  mapfile -t TARGETS < <(discover | sort)
+  mapfile -t TARGETS < <(discover | sort | filter_targets)
   [ "${#TARGETS[@]}" -gt 0 ] || { log "no fuzz targets discovered under $MODULE_DIR"; exit 1; }
   log "discovered ${#TARGETS[@]} target(s); mode=$SOURCE_MODE/$CRASH_MODE default=$DEFAULT_FUZZTIME corpus_sync=$CORPUS_SYNC"
 
@@ -174,7 +185,7 @@ main() {
     if [ "$i" -eq 0 ]; then
       [ "$SOURCE_MODE" = "git" ] && sync_main
       sync_corpus
-      mapfile -t NEW < <(discover | sort)
+      mapfile -t NEW < <(discover | sort | filter_targets)
       if [ "${#NEW[@]}" -gt 0 ] && [ "${NEW[*]}" != "${TARGETS[*]}" ]; then
         log "target set changed (${#TARGETS[@]} -> ${#NEW[@]}) — reloading"; exec "$0" "$@"
       fi

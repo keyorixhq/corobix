@@ -91,6 +91,7 @@ All keys are set in `fuzz.conf`. Only `MODULE_DIR` is required.
 | `CORPUS_SYNC` | `off` | `on` backs up `$GOCACHE/fuzz` to `CORPUS_REPO` once per cycle. |
 | `CORPUS_REPO` | — | Private git repo for crashers (private mode) and corpus snapshots. |
 | `CORPUS_PROJECT` | `basename $MODULE_DIR` | Namespace under the corpus repo (`keyorix`/`dashdiag`/`libs`). |
+| `EXCLUDE` | — | Space-separated `Fuzz*` func names to drop from rotation (e.g. a saturated target on a pinned lib). Whole-name match. |
 | `DEFAULT_FUZZTIME` | `15m` | Per-target fuzztime when no override is set. |
 | `DURATION_<Func>` | — | Per-target fuzztime override, e.g. `DURATION_FuzzVerifyReceipt=3h`. |
 | `PARALLEL` | `4` | `go test -parallel`. |
