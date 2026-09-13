@@ -124,3 +124,43 @@ setup() {
   run sat_verdict 5 7
   [ "$output" = "active (+7 over 5 runs)" ]
 }
+
+# --- _stage_crasher (regression: must work from a foreign CWD) ----------------
+# Guards the bug where handle_crash passed a module-relative src that no longer
+# resolved after push_to_main cd'd into the corpus checkout, so crasher staging
+# silently failed while the local findings copy survived.
+
+@test "_stage_crasher stages from an absolute CRASH_SRC when CWD is elsewhere" {
+  LOG_DIR="$BATS_TEST_TMPDIR"
+  src="$BATS_TEST_TMPDIR/mod/testdata/fuzz/FuzzX"
+  mkdir -p "$src"; echo "repro-bytes" > "$src/seed1"
+  repo="$BATS_TEST_TMPDIR/corpus-main"; mkdir -p "$repo"
+  CORPUS_PROJECT=libs-extra CRASH_PKG=keyorix-libs-extra-fuzz CRASH_FN=FuzzX CRASH_TS=20260913T000000Z
+  CRASH_SRC="$src"
+  cd "$repo"
+  run _stage_crasher
+  [ "$status" -eq 0 ]
+  [ -f "$repo/crashers/libs-extra/keyorix-libs-extra-fuzz/FuzzX/20260913T000000Z/seed1" ]
+}
+
+@test "_stage_crasher fails (non-zero) when CRASH_SRC does not resolve from CWD" {
+  LOG_DIR="$BATS_TEST_TMPDIR"
+  repo="$BATS_TEST_TMPDIR/corpus-main2"; mkdir -p "$repo"
+  CORPUS_PROJECT=libs-extra CRASH_PKG=pkg CRASH_FN=FuzzY CRASH_TS=t
+  CRASH_SRC="./does/not/exist"
+  cd "$repo"
+  run _stage_crasher
+  [ "$status" -ne 0 ]
+}
+
+@test "_find_repro_dir returns an ABSOLUTE path (locks the relative-src bug)" {
+  # The bug: handle_crash resolved src with 'find .', a module-relative path that
+  # broke once push_to_main cd'd into the corpus checkout. It must be absolute.
+  mod="$BATS_TEST_TMPDIR/mod"
+  mkdir -p "$mod/testdata/fuzz/FuzzZ"; echo x > "$mod/testdata/fuzz/FuzzZ/seed"
+  cd "$mod"
+  run _find_repro_dir FuzzZ
+  [ "$status" -eq 0 ]
+  [[ "$output" == /* ]]                                   # absolute, not "./..."
+  [ "$output" = "$mod/testdata/fuzz/FuzzZ" ]
+}

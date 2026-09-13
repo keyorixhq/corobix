@@ -108,8 +108,13 @@ sync_corpus() {
 # push_crasher_private: append a reproducer to crashers/<project>/<pkg>/<fn>/<ts>/
 # on main. Non-fatal — the caller always keeps a local FINDINGS_DIR copy too.
 _stage_crasher() {
-  local dest="crashers/$CORPUS_PROJECT/${CRASH_PKG//\//_}/$CRASH_FN/$CRASH_TS"
-  mkdir -p "$dest"; cp -a "$CRASH_SRC"/. "$dest"/ 2>/dev/null
+  local dest="crashers/$CORPUS_PROJECT/${CRASH_PKG//\//_}/$CRASH_FN/$CRASH_TS" err
+  mkdir -p "$dest" || { log "crasher stage: mkdir failed for $dest"; return 1; }
+  # CRASH_SRC MUST be absolute: push_to_main cd's into the corpus checkout before
+  # running this, so a path relative to the module dir would not resolve here.
+  if ! err="$(cp -a "$CRASH_SRC"/. "$dest"/ 2>&1)"; then
+    log "crasher stage: cp from '$CRASH_SRC' failed: $err"; return 1
+  fi
 }
 push_crasher_private() {
   CRASH_FN="$1" CRASH_PKG="$2" CRASH_TS="$3" CRASH_SRC="$4"
@@ -160,10 +165,17 @@ saturation_report() {
   notify "$msg"; echo "$now" > "$stamp"; log "saturation report sent"
 }
 
+# _find_repro_dir <fn> -> ABSOLUTE path of the go-fuzz reproducer dir for <fn>, or
+# empty. Must be absolute: push_to_main cd's into the corpus checkout before
+# staging, so a module-relative path (find ".") would break _stage_crasher.
+_find_repro_dir() {
+  find "$PWD" -type d -path "*/testdata/fuzz/$1" 2>/dev/null | head -1
+}
+
 handle_crash() { # $1=fn $2=pkg $3=rc ; called only when a real reproducer exists
   local fn="$1" pkg="$2" rc="$3" ts src dest mode
   ts="$(date -u +%Y%m%dT%H%M%SZ)"; mode="$(effective_crash_mode)"
-  src="$(find . -type d -path "*/testdata/fuzz/$fn" 2>/dev/null | head -1)"
+  src="$(_find_repro_dir "$fn")"   # absolute — see _find_repro_dir
   # Always keep a local copy first, so no reproducer is ever lost to a push failure.
   dest="$FINDINGS_DIR/$fn/$ts"; mkdir -p "$dest"
   [ -n "$src" ] && cp -a "$src"/. "$dest"/ 2>/dev/null
