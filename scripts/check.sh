@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 echo "== shellcheck =="
-shellcheck fuzz-runner.sh
+shellcheck fuzz-runner.sh scripts/require-deadline.sh
 
 echo "== bats =="
 bats tests/
@@ -17,5 +17,8 @@ for m in targets/*/; do
 	echo "  ${m}"
 	( cd "$m" && go vet ./... )
 done
+
+echo "== require-deadline lint (per-input deadline on every target) =="
+scripts/require-deadline.sh
 
 echo "OK - all local checks passed"
