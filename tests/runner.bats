@@ -30,59 +30,95 @@ setup() {
   [ "$output" = "1h" ]
 }
 
-# --- effective_crash_mode ----------------------------------------------------
+# --- effective_report_mode ---------------------------------------------------
 
 @test "git + pr stays pr (public PR allowed for own code)" {
-  SOURCE_MODE=git CRASH_MODE=pr
-  run effective_crash_mode
+  SOURCE_MODE=git REPORT_MODE=pr
+  run effective_report_mode
   [ "$output" = "pr" ]
 }
 
 @test "standalone + pr downgrades to private when CORPUS_REPO is set" {
-  SOURCE_MODE=standalone CRASH_MODE=pr CORPUS_REPO=git@github.com:keyorixhq/fuzz-corpus.git
-  run effective_crash_mode
+  SOURCE_MODE=standalone REPORT_MODE=pr CORPUS_REPO=git@github.com:keyorixhq/fuzz-corpus.git
+  run effective_report_mode
   [ "$output" = "private" ]
 }
 
 @test "standalone + pr downgrades to local when no CORPUS_REPO" {
-  SOURCE_MODE=standalone CRASH_MODE=pr CORPUS_REPO=
-  run effective_crash_mode
+  SOURCE_MODE=standalone REPORT_MODE=pr CORPUS_REPO=
+  run effective_report_mode
   [ "$output" = "local" ]
 }
 
 @test "standalone + pr + ALLOW_PR_FOR_STANDALONE=1 stays pr" {
-  SOURCE_MODE=standalone CRASH_MODE=pr ALLOW_PR_FOR_STANDALONE=1
-  run effective_crash_mode
+  SOURCE_MODE=standalone REPORT_MODE=pr ALLOW_PR_FOR_STANDALONE=1
+  run effective_report_mode
   [ "$output" = "pr" ]
 }
 
+@test "git + issue stays issue (public issue allowed for own code)" {
+  SOURCE_MODE=git REPORT_MODE=issue
+  run effective_report_mode
+  [ "$output" = "issue" ]
+}
+
+@test "standalone + issue downgrades to private when CORPUS_REPO is set" {
+  SOURCE_MODE=standalone REPORT_MODE=issue CORPUS_REPO=git@github.com:keyorixhq/fuzz-corpus.git
+  run effective_report_mode
+  [ "$output" = "private" ]
+}
+
+@test "standalone + issue downgrades to local when no CORPUS_REPO" {
+  SOURCE_MODE=standalone REPORT_MODE=issue CORPUS_REPO=
+  run effective_report_mode
+  [ "$output" = "local" ]
+}
+
+@test "standalone + issue + ALLOW_PUBLIC_FOR_STANDALONE=1 stays issue" {
+  SOURCE_MODE=standalone REPORT_MODE=issue ALLOW_PUBLIC_FOR_STANDALONE=1
+  run effective_report_mode
+  [ "$output" = "issue" ]
+}
+
+@test "deprecated CRASH_MODE is honored when REPORT_MODE is unset" {
+  SOURCE_MODE=git CRASH_MODE=pr
+  run effective_report_mode
+  [ "$output" = "pr" ]
+}
+
+@test "REPORT_MODE wins over a stale CRASH_MODE" {
+  SOURCE_MODE=git REPORT_MODE=private CRASH_MODE=pr
+  run effective_report_mode
+  [ "$output" = "private" ]
+}
+
 @test "private stays private for standalone" {
-  SOURCE_MODE=standalone CRASH_MODE=private CORPUS_REPO=git@github.com:keyorixhq/fuzz-corpus.git
-  run effective_crash_mode
+  SOURCE_MODE=standalone REPORT_MODE=private CORPUS_REPO=git@github.com:keyorixhq/fuzz-corpus.git
+  run effective_report_mode
   [ "$output" = "private" ]
 }
 
 @test "private stays private for git" {
-  SOURCE_MODE=git CRASH_MODE=private CORPUS_REPO=git@github.com:keyorixhq/fuzz-corpus.git
-  run effective_crash_mode
+  SOURCE_MODE=git REPORT_MODE=private CORPUS_REPO=git@github.com:keyorixhq/fuzz-corpus.git
+  run effective_report_mode
   [ "$output" = "private" ]
 }
 
 @test "standalone + local stays local" {
-  SOURCE_MODE=standalone CRASH_MODE=local
-  run effective_crash_mode
+  SOURCE_MODE=standalone REPORT_MODE=local
+  run effective_report_mode
   [ "$output" = "local" ]
 }
 
 @test "git + local stays local" {
-  SOURCE_MODE=git CRASH_MODE=local
-  run effective_crash_mode
+  SOURCE_MODE=git REPORT_MODE=local
+  run effective_report_mode
   [ "$output" = "local" ]
 }
 
-@test "crash mode defaults to local when unset" {
+@test "report mode defaults to local when unset" {
   SOURCE_MODE=git
-  run effective_crash_mode
+  run effective_report_mode
   [ "$output" = "local" ]
 }
 
