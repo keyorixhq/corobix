@@ -9,8 +9,79 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 log()   { echo "[$(date -u +%FT%TZ)] $*" | tee -a "${LOG_DIR:-/tmp}/rotation.log" >&2; }
 notify(){ [ -n "${NOTIFY_URL:-}" ] && curl -fsS -m 10 -d "$1" "$NOTIFY_URL" >/dev/null 2>&1 || true; }
 
-# resolve_duration <FuzzFunc> -> per-target override (DURATION_<fn>) or DEFAULT_FUZZTIME
-resolve_duration() { local dv="DURATION_${1}"; echo "${!dv:-$DEFAULT_FUZZTIME}"; }
+# dur_to_secs <godur> -> integer seconds for an h/m/s go-duration ("1h30m","15m",
+# "90s") or a bare integer (already seconds). Unparseable -> 0. (go test -fuzztime
+# durations only ever use h/m/s here.)
+dur_to_secs() {
+  local s="$1" total=0 n
+  [[ "$s" =~ ^[0-9]+$ ]] && { echo "$s"; return; }
+  n="$(printf '%s' "$s" | grep -oE '[0-9]+h' | grep -oE '[0-9]+')"; [ -n "$n" ] && total=$(( total + n*3600 ))
+  n="$(printf '%s' "$s" | grep -oE '[0-9]+m' | grep -oE '[0-9]+')"; [ -n "$n" ] && total=$(( total + n*60 ))
+  n="$(printf '%s' "$s" | grep -oE '[0-9]+s' | grep -oE '[0-9]+')"; [ -n "$n" ] && total=$(( total + n ))
+  echo "$total"
+}
+
+# is_saturated <fn> -> true iff >= CONFIRM_MIN_RUNS recorded runs with zero total
+# new-coverage growth across the window (mirrors sat_verdict's SATURATED verdict,
+# reading the same $STATE_DIR/sat/<fn> history record_saturation writes).
+is_saturated() {
+  local f="$STATE_DIR/sat/$1" n=0 s=0
+  [ -r "$f" ] || return 1
+  n="$(awk 'END{print NR+0}' "$f")"; s="$(awk '{t+=$1} END{print t+0}' "$f")"
+  [ "$n" -ge "${CONFIRM_MIN_RUNS:-3}" ] && [ "$s" -eq 0 ]
+}
+
+# measured_exec_rate <fn> -> execs/sec from the target's last run (its last NON-zero
+# "(K/sec)" tick; the very last tick prints 0/sec, so zeros are skipped), or 0 if
+# unknown. The per-target log is append-only, so tail-most is the latest run.
+measured_exec_rate() {
+  local r
+  r="$(grep -aoE '\([0-9]+/sec\)' "$LOG_DIR/$1.log" 2>/dev/null | grep -oE '[0-9]+' | grep -vxE '0' | tail -1)"
+  echo "${r:-0}"
+}
+
+# measured_warmup_secs <fn> -> seconds Go spent gathering baseline coverage on the
+# last run (the "elapsed: Xs, gathering baseline coverage: N/N completed, now
+# fuzzing" line — the corpus-replay warm-up that a slice must dwarf), or 0.
+measured_warmup_secs() {
+  local e
+  e="$(grep -aoE 'elapsed: [0-9hms]+, gathering baseline coverage: [0-9]+/[0-9]+ completed, now fuzzing' "$LOG_DIR/$1.log" 2>/dev/null | tail -1 | grep -oE 'elapsed: [0-9hms]+' | grep -oE '[0-9hms]+$')"
+  if [ -n "$e" ]; then dur_to_secs "$e"; else echo 0; fi
+}
+
+# resolve_duration <FuzzFunc> -> the fuzztime for the next slice.
+#
+# Baseline (and the default when REWEIGHT_CONFIRM is off): the per-target override
+# DURATION_<fn>, else DEFAULT_FUZZTIME. That is the ACTIVE / new-target budget, kept
+# in full while a target is still finding coverage.
+#
+# With REWEIGHT_CONFIRM=on, once a target has gone SATURATED (is_saturated), its
+# slice shrinks to a CONFIRMATION slice sized from that target's OWN throughput:
+#   confirm = max( CONFIRM_EXEC_BUDGET/exec_rate , warmup*CONFIRM_WARMUP_MULT ,
+#                  CONFIRM_MIN_SLICE ),  capped at the configured budget.
+# So a saturated fast parser (tens of k execs/s, ~1s warm-up) collapses to ~1-2m,
+# while a saturated slow/crypto target (few k/s, or a long warm-up) stays
+# proportionally longer: the per-slice switch cost never dominates, and a "0 new
+# coverage" verdict still rests on CONFIRM_EXEC_BUDGET fresh execs. Fail-safe — a
+# target still finding, or whose throughput isn't measured yet, keeps its full
+# configured budget and is never starved.
+resolve_duration() {
+  local fn="$1" dv="DURATION_${1}" configured rate warmup budget floor confirm cap
+  configured="${!dv:-$DEFAULT_FUZZTIME}"
+  [ "${REWEIGHT_CONFIRM:-off}" = on ] || { echo "$configured"; return; }
+  is_saturated "$fn" || { echo "$configured"; return; }
+  rate="$(measured_exec_rate "$fn")"
+  [ "$rate" -gt 0 ] 2>/dev/null || { echo "$configured"; return; }
+  warmup="$(measured_warmup_secs "$fn")"
+  budget=$(( ${CONFIRM_EXEC_BUDGET:-5000000} / rate ))
+  floor=$(( warmup * ${CONFIRM_WARMUP_MULT:-10} ))
+  confirm="$budget"
+  [ "$floor" -gt "$confirm" ] && confirm="$floor"
+  [ "${CONFIRM_MIN_SLICE:-60}" -gt "$confirm" ] && confirm="${CONFIRM_MIN_SLICE:-60}"
+  cap="$(dur_to_secs "$configured")"
+  { [ "$cap" -gt 0 ] && [ "$confirm" -ge "$cap" ]; } && { echo "$configured"; return; }
+  echo "${confirm}s"
+}
 
 # effective_crash_mode -> local|pr|private.
 # pr = PUBLIC (opens a PR on the source repo). NEVER allowed for a standalone
@@ -136,7 +207,10 @@ sat_verdict() {
 # record_saturation <fn> -> append this run's final "new interesting" count to a
 # per-target history file, trimmed to the last SATURATION_WINDOW runs.
 record_saturation() {
-  [ "${SATURATION_REPORT:-off}" = on ] || return 0
+  # Recorded when the advisory report is on OR the exec-rate reweight is on — the
+  # reweight (resolve_duration/is_saturated) reads this same history, so it must
+  # not depend on NOTIFY_URL / the report being enabled.
+  { [ "${SATURATION_REPORT:-off}" = on ] || [ "${REWEIGHT_CONFIRM:-off}" = on ]; } || return 0
   local fn="$1" k f
   f="$STATE_DIR/sat/$fn"; mkdir -p "$STATE_DIR/sat"
   k="$(grep -aoE 'new interesting: [0-9]+' "$LOG_DIR/$fn.log" 2>/dev/null | tail -1 | grep -oE '[0-9]+$')"
@@ -217,6 +291,10 @@ main() {
   : "${CORPUS_SYNC:=off}"; : "${CORPUS_REPO:=}"; : "${CORPUS_PROJECT:=$(basename "$MODULE_DIR")}"; : "${EXCLUDE:=}"
   : "${GIT_AUTHOR:=Andrei Beshkov}"; : "${GIT_EMAIL:=andrey.beshkov@gmail.com}"
   : "${SATURATION_REPORT:=off}"; : "${SATURATION_REPORT_INTERVAL:=21600}"; : "${SATURATION_WINDOW:=10}"
+  # Exec-rate-scaled confirmation slices (off = unchanged behavior). When on, a
+  # SATURATED target's slice is sized from its own throughput (see resolve_duration).
+  : "${REWEIGHT_CONFIRM:=off}"; : "${CONFIRM_EXEC_BUDGET:=5000000}"; : "${CONFIRM_MIN_SLICE:=60}"
+  : "${CONFIRM_WARMUP_MULT:=10}"; : "${CONFIRM_MIN_RUNS:=3}"
   local eff; eff="$(effective_crash_mode)"
   [ "$eff" = "${CRASH_MODE}" ] || echo "fuzz-runner: crash mode $CRASH_MODE -> $eff for standalone module (disclosure safety)" >&2
   CRASH_MODE="$eff"
