@@ -1,33 +1,76 @@
-# systemd unit template for a fuzz-harness rig.
-# Substitute the {{...}} placeholders and drop into /etc/systemd/system/,
-# then: systemctl daemon-reload && systemctl enable --now <name>.service
+# ─────────────────────────────────────────────────────────────────────────────
+# systemd unit STARTER for a NEW fuzz-harness rig.
 #
-# Notes:
-#  - MemoryMax MUST sit below physical RAM and MemorySwapMax=0, so a runaway
-#    target is OOM-killed inside the cgroup instead of thrashing the host.
-#  - Restart=always keeps the rig up across crashes and reboots; the runner
-#    resumes mid-rotation from its saved position.
-#  - snap-installed Go escapes the service cgroup unless the real toolchain is
-#    on PATH; use /usr/local/go/bin (or /snap/go/current/bin for snap Go).
+# This is a starting point to TUNE, not a renderer for the four existing rigs.
+# The rigs already in service (keyorix-fuzz, dashdiag-fuzz, libs-extra-fuzz,
+# libsfuzz) are hand-tuned per box and live, fully commented, in
+# deploy/systemd/*.service — THOSE files are the source of truth for those rigs.
+# Copy this file when standing up a brand-new rig, fill the {{...}} blanks,
+# uncomment the knobs your box needs, and drop the result in deploy/systemd/ as
+# <service>.service so it too becomes tracked, canonical, and deployable via
+# `deploy/deploy.sh --unit <rig>` / `--bootstrap <rig>`.
+#
+# Everything below the two [Unit]/[Service]/[Install] blocks is the fleet
+# baseline — the shape every rig shares. The commented knobs are the per-box
+# facts that legitimately differ (see the README table): sizing, run user,
+# shared-box CPU limits, rig-local secrets, and a second conf on a shared runner.
+#
+# Install (or let `deploy.sh --bootstrap` do it): substitute {{...}}, then
+#   sudo install -m0644 <this> /etc/systemd/system/<service>.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now <service>.service
+# ─────────────────────────────────────────────────────────────────────────────
 [Unit]
 Description={{DESCRIPTION}}
-After=network.target
+# network-online (not plain network.target) so the first corpus/module git sync
+# has real connectivity. A dedicated box with no sync-on-boot can use
+# `After=network.target` instead (libsfuzz does).
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
+# Run user. Set both, matched, for a normal user-owned rig. A dedicated box that
+# runs as root (libsfuzz on pve01) OMITS both these lines entirely.
 User={{USER}}
+Group={{USER}}
 Environment=HOME={{HOME}}
-Environment=PATH=/usr/local/go/bin:/usr/bin:/bin
+# Go toolchain MUST be on PATH inside the cgroup. snap Go: /snap/go/current/bin
+# (the andrei rigs); a tarball/apt Go: /usr/local/go/bin (libsfuzz). Pick one.
+Environment=PATH=/snap/go/current/bin:/usr/bin:/bin
 Environment=GOPATH={{HOME}}/go
-Environment=GOMODCACHE={{HOME}}/go/pkg/mod
-Environment=GOCACHE={{HOME}}/.cache/go-build
 Environment=GOTOOLCHAIN=auto
-Environment=FUZZ_CONF={{FUZZ_CONF}}
+# GOMODCACHE/GOCACHE default under HOME; set them explicitly only if HOME is not
+# where you want the caches (libsfuzz pins them under /root):
+#Environment=GOMODCACHE={{HOME}}/go/pkg/mod
+#Environment=GOCACHE={{HOME}}/.cache/go-build
+# Rig-local secrets (e.g. the CORPUS_REPO deploy key) — leading '-' so a missing
+# file does not fail the unit. NOT tracked in this repo; it lives only on the rig.
+#EnvironmentFile=-/etc/{{SERVICE}}/config.env
+# Set FUZZ_CONF ONLY when this rig shares a runner copy with another service and
+# its conf is therefore NOT the fuzz.conf beside the runner (libs-extra-fuzz).
+# Otherwise the runner uses $SCRIPT_DIR/fuzz.conf and you leave this out.
+#Environment=FUZZ_CONF={{HOME}}/proj/{{SERVICE}}/fuzz.conf
+# Some targets need a working directory (a repo root); set it to the module dir
+# if so (dashdiag-fuzz / libs-extra-fuzz do). Harmless to omit otherwise.
+#WorkingDirectory={{HOME}}/proj/{{MODULE}}
 ExecStart={{RUNNER_PATH}}
-Restart=always
-RestartSec=10
+# on-failure brings the rig back after a crash/OOM-kill; the runner resumes
+# mid-rotation from its saved position. (keyorix-fuzz uses Restart=always.)
+Restart=on-failure
+RestartSec=30
+# Shared-box politeness — uncomment on a box that also does other work:
+#Nice=10
+# CPUQuota: cap cores on a SHARED box so fuzzing leaves headroom for the host
+# (keyorix-fuzz: 700% = 7 of 8 vCPU). Omit on a dedicated box.
+#CPUQuota=700%
+# MemoryMax MUST sit below physical RAM. With MemorySwapMax=0 a runaway/OOM-class
+# target (e.g. an amplification DoS) is OOM-killed inside the cgroup and recorded,
+# instead of thrashing swap and taking the box down. Size to THIS box's RAM.
 MemoryMax={{MEMORY_MAX}}
 MemorySwapMax=0
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier={{SERVICE}}
 
 [Install]
 WantedBy=multi-user.target

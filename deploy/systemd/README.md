@@ -18,6 +18,12 @@ sized to each box's RAM, `CPUQuota` only where the box is shared, and
 identical: `Type=simple`, `ExecStart=<runner>`, `MemorySwapMax=0`,
 `Restart`, journal logging, `WantedBy=multi-user.target`.
 
+These four files are the source of truth for **these** rigs. For a **brand-new**
+rig, start from [`../../templates/fuzz-rig.service.tmpl`](../../templates/fuzz-rig.service.tmpl):
+it carries that shared baseline with the per-box knobs commented, as a starting
+point to fill in and tune — not a renderer that reproduces the four above. Save
+the result here as `<service>.service` so it too becomes tracked and deployable.
+
 ## Config lookup
 
 `fuzz-runner.sh` reads its config from `$FUZZ_CONF`, else `$SCRIPT_DIR/fuzz.conf`
@@ -25,7 +31,37 @@ identical: `Type=simple`, `ExecStart=<runner>`, `MemorySwapMax=0`,
 copy must serve a conf that is NOT beside it (the `libs-extra-fuzz` case). The
 crash report sink is `REPORT_MODE` in that `fuzz.conf` (default `private`).
 
+## Operate a rig with `deploy.sh`
+
+[`../deploy.sh`](../deploy.sh) is the one command for all three rig operations;
+each is human-gated and takes `--dry-run` to print the exact plan (ssh/scp/sudo)
+without touching anything. Preview first — always.
+
+```sh
+deploy/deploy.sh --list                       # keyorix | dashdiag | libs-extra | libs
+deploy/deploy.sh <rig>... | --all              # push THIS checkout's fuzz-runner.sh (no root)
+deploy/deploy.sh --unit <rig>...               # install/reconcile the canonical unit (sudo on rig)
+deploy/deploy.sh --bootstrap <rig>             # cold-start a fresh rig end to end (sudo on rig)
+deploy/deploy.sh --dry-run <any of the above>  # print the plan, change nothing
+```
+
+- **runner push** (`<rig>`/`--all`) needs no root: it scp's the runner and bumps
+  a marker in the rig's `fuzz.conf` to trip the runner's config-hash self-reload.
+  It targets the path the *service* runs (`ExecStart`), so `libs-extra` correctly
+  updates the runner copy it shares with `dashdiag`, not a private copy.
+- **`--unit`** scripts the manual reconcile runbook below: scp the tracked unit,
+  back up the old one, `install -m0644`, `daemon-reload`, `restart`, verify. It
+  does **not** remove drop-ins — it lists any it finds so you decide.
+- **`--bootstrap`** cold-starts one fresh rig: check go/git, make dirs, clone the
+  module (git rigs) or expect an assembled tree (standalone), seed `fuzz.conf`
+  from `examples/` *only if absent*, push the runner, install the unit, and
+  `enable --now`. Run `--dry-run` first, then run it for real on the prepared box.
+
 ## Reconcile a rig to canonical (needs root / sudo on the rig)
+
+`deploy.sh --unit <rig>` does the steps below for you; the manual runbook is kept
+for the one-time drop-in removal (which `--unit` intentionally leaves to you) and
+for when you want to run each step by hand.
 
 `libs-extra-fuzz` and `libsfuzz` are already clean and match these files.
 `keyorix-fuzz` and `dashdiag-fuzz` were migrated to the runner via a stack of
