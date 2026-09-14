@@ -83,14 +83,18 @@ resolve_duration() {
   echo "${confirm}s"
 }
 
-# effective_crash_mode -> local|pr|private.
-# pr = PUBLIC (opens a PR on the source repo). NEVER allowed for a standalone
-# (third-party) module — a crash there is pre-disclosure 0-day material. Such a
-# request is downgraded to private (push to the private CORPUS_REPO) when one is
-# configured, else to local (on-box only). ALLOW_PR_FOR_STANDALONE=1 overrides.
-effective_crash_mode() {
-  local m="${CRASH_MODE:-local}"
-  if [ "${SOURCE_MODE:-}" = "standalone" ] && [ "$m" = "pr" ] && [ "${ALLOW_PR_FOR_STANDALONE:-0}" != "1" ]; then
+# effective_report_mode -> local|private|pr|issue. The report SINK for a
+# confirmed crash reproducer (renamed from CRASH_MODE, still honored as a
+# deprecated alias — see main()). pr and issue are PUBLIC: pr opens a PR on the
+# source repo, issue opens a GitHub issue on it. NEITHER is allowed for a
+# standalone (third-party) module — a crash there is pre-disclosure 0-day
+# material. Such a request is downgraded to private (push to the private
+# CORPUS_REPO) when one is configured, else to local (on-box only).
+# ALLOW_PUBLIC_FOR_STANDALONE=1 (alias: ALLOW_PR_FOR_STANDALONE=1) overrides.
+effective_report_mode() {
+  local m="${REPORT_MODE:-${CRASH_MODE:-local}}"   # CRASH_MODE = deprecated alias
+  if [ "${SOURCE_MODE:-}" = "standalone" ] && { [ "$m" = "pr" ] || [ "$m" = "issue" ]; } \
+     && [ "${ALLOW_PUBLIC_FOR_STANDALONE:-${ALLOW_PR_FOR_STANDALONE:-0}}" != "1" ]; then
     if [ -n "${CORPUS_REPO:-}" ]; then echo private; else echo local; fi
     return
   fi
@@ -279,8 +283,8 @@ quarantine_unverified() {
 }
 
 handle_crash() { # $1=fn $2=pkg $3=rc ; called only when a real reproducer exists
-  local fn="$1" pkg="$2" rc="$3" ts src dest mode
-  ts="$(date -u +%Y%m%dT%H%M%SZ)"; mode="$(effective_crash_mode)"
+  local fn="$1" pkg="$2" rc="$3" ts src dest mode body
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"; mode="$(effective_report_mode)"
   src="$(_find_repro_dir "$fn")"   # absolute — see _find_repro_dir
   # Always keep a local copy first, so no reproducer is ever lost to a push failure.
   dest="$FINDINGS_DIR/$fn/$ts"; mkdir -p "$dest"
@@ -304,6 +308,31 @@ handle_crash() { # $1=fn $2=pkg $3=rc ; called only when a real reproducer exist
       push_crasher_private "$fn" "$pkg" "$ts" "$src"
       notify "CRASH (private) $fn in $pkg -> $CORPUS_PROJECT"
       ;;
+    issue)
+      # PUBLIC GitHub issue as a repro POINTER — never the raw crashing input
+      # (that stays local, and in the private CORPUS_REPO if configured), so
+      # opening an issue on a public repo does not itself disclose the 0-day.
+      log "CRASH $fn ($pkg) rc=$rc — opening a GitHub issue (repro pointer; raw input kept local -> $dest)"
+      if command -v gh >/dev/null; then
+        # shellcheck disable=SC2016  # single-quoted printf FORMAT: %s are printf specifiers, backticks are literal markdown
+        body="$(printf 'A fuzz run for `%s` in `%s` exited non-zero and produced a reproducer (rc=%s, %s).\n\nReproduce on a checkout at this commit:\n\n```\ngo test -run='\''^%s$'\'' %s\n```\n\nThe crashing input is intentionally NOT included here (disclosure safety): it is on the rig under FINDINGS_DIR%s. Set ISSUE_INCLUDE_LOG=1 on the rig to attach a scrubbed log tail.' \
+          "$fn" "$pkg" "$rc" "$ts" "$fn" "$pkg" "$([ -n "${CORPUS_REPO:-}" ] && printf ', and in the private corpus repo')")"
+        if [ "${ISSUE_INCLUDE_LOG:-0}" = "1" ]; then
+          body="${body}"$'\n\nLog tail:\n\n```\n'"$(tail -n 20 "$LOG_DIR/${fn}.log" 2>/dev/null | tr -d '`')"$'\n```'
+        fi
+        # ISSUE_REPO targets a specific repo; unset -> gh infers it from the module checkout.
+        if [ -n "${ISSUE_REPO:-}" ]; then
+          gh issue create --repo "$ISSUE_REPO" --title "fuzz(crash): $fn" --body "$body" >/dev/null 2>&1 \
+            || log "gh issue create failed (non-fatal) — reproducer kept local -> $dest"
+        else
+          gh issue create --title "fuzz(crash): $fn" --body "$body" >/dev/null 2>&1 \
+            || log "gh issue create failed (non-fatal) — reproducer kept local -> $dest"
+        fi
+      else
+        log "gh not available — cannot open issue; reproducer kept local -> $dest"
+      fi
+      notify "CRASH (issue) $fn in $pkg"
+      ;;
     *)
       log "CRASH $fn ($pkg) rc=$rc — reproducer(s) -> $dest (mode=local, NOT published)"
       notify "CRASH (local) $fn in $pkg -> $dest"
@@ -317,7 +346,9 @@ main() {
   . "$CONF"
   : "${MODULE_DIR:?set MODULE_DIR in fuzz.conf}"
   : "${SOURCE_MODE:=standalone}"; : "${GIT_REMOTE:=origin}"; : "${GIT_BRANCH:=main}"
-  : "${DEFAULT_FUZZTIME:=15m}"; : "${PARALLEL:=4}"; : "${CRASH_MODE:=local}"
+  # REPORT_MODE is the crash-reproducer report sink (local|private|pr|issue).
+  # CRASH_MODE is the deprecated former name, still honored when REPORT_MODE is unset.
+  : "${DEFAULT_FUZZTIME:=15m}"; : "${PARALLEL:=4}"; : "${REPORT_MODE:=${CRASH_MODE:-local}}"
   : "${STATE_DIR:=$MODULE_DIR-state}"; : "${LOG_DIR:=$MODULE_DIR-logs}"; : "${FINDINGS_DIR:=$MODULE_DIR-findings}"
   : "${CORPUS_BRANCH:=fuzz/corpus-updates}"; : "${NOTIFY_URL:=}"; : "${FETCH_RETRIES:=5}"; : "${FETCH_BACKOFF:=10}"
   : "${CORPUS_SYNC:=off}"; : "${CORPUS_REPO:=}"; : "${CORPUS_PROJECT:=$(basename "$MODULE_DIR")}"; : "${EXCLUDE:=}"
@@ -330,9 +361,10 @@ main() {
   # Re-verify a reproducer before alerting/pushing (on = suppress transient worker
   # deaths that don't actually reproduce; see reproducer_reverifies).
   : "${REVERIFY_CRASH:=on}"; : "${REVERIFY_RUNS:=1}"; : "${REVERIFY_TIMEOUT:=2m}"
-  local eff; eff="$(effective_crash_mode)"
-  [ "$eff" = "${CRASH_MODE}" ] || echo "fuzz-runner: crash mode $CRASH_MODE -> $eff for standalone module (disclosure safety)" >&2
-  CRASH_MODE="$eff"
+  [ -n "${CRASH_MODE:-}" ] && echo "fuzz-runner: CRASH_MODE is deprecated — rename it to REPORT_MODE in fuzz.conf (honored for now)" >&2
+  local eff; eff="$(effective_report_mode)"
+  [ "$eff" = "${REPORT_MODE}" ] || echo "fuzz-runner: report mode $REPORT_MODE -> $eff for standalone module (disclosure safety)" >&2
+  REPORT_MODE="$eff"
   mkdir -p "$STATE_DIR" "$LOG_DIR" "$FINDINGS_DIR"
   CONF_HASH="$(sha256sum "$CONF" | cut -d' ' -f1)"
   cd "$MODULE_DIR" || { echo "fuzz-runner: MODULE_DIR not found: $MODULE_DIR" >&2; exit 1; }
@@ -340,7 +372,7 @@ main() {
   [ "$SOURCE_MODE" = "git" ] && sync_main
   mapfile -t TARGETS < <(discover | sort | filter_targets)
   [ "${#TARGETS[@]}" -gt 0 ] || { log "no fuzz targets discovered under $MODULE_DIR"; exit 1; }
-  log "discovered ${#TARGETS[@]} target(s); mode=$SOURCE_MODE/$CRASH_MODE default=$DEFAULT_FUZZTIME corpus_sync=$CORPUS_SYNC"
+  log "discovered ${#TARGETS[@]} target(s); mode=$SOURCE_MODE/$REPORT_MODE default=$DEFAULT_FUZZTIME corpus_sync=$CORPUS_SYNC"
 
   local POS_FILE="$STATE_DIR/rotation-pos" i=0 s
   if [ -r "$POS_FILE" ]; then s="$(cat "$POS_FILE" 2>/dev/null || echo 0)"; [[ "$s" =~ ^[0-9]+$ ]] && i=$(( s % ${#TARGETS[@]} )); fi
