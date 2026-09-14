@@ -242,3 +242,37 @@ _seed() {  # _seed <fn> <sat-lines-newline-sep> <ratePerSec> <warmupGoDur>
   DEFAULT_FUZZTIME=15m REWEIGHT_CONFIRM=on run resolve_duration FuzzNoRate
   [ "$output" = 15m ]
 }
+
+# --- reproducer_reverifies (crash re-verify guard) ---------------------------
+
+@test "reproducer_reverifies: replay re-fails -> REAL crash (returns 0)" {
+  LOG_DIR="$BATS_TEST_TMPDIR"
+  go() { return 1; }                       # stub: the saved input fails on replay
+  run reproducer_reverifies FuzzX ./pkg
+  [ "$status" -eq 0 ]
+}
+
+@test "reproducer_reverifies: replay passes -> TRANSIENT (returns nonzero)" {
+  LOG_DIR="$BATS_TEST_TMPDIR"
+  go() { return 0; }                       # stub: replays clean
+  REVERIFY_RUNS=1 run reproducer_reverifies FuzzX ./pkg
+  [ "$status" -ne 0 ]
+}
+
+@test "reproducer_reverifies: ANY failure across REVERIFY_RUNS counts as reproduced" {
+  LOG_DIR="$BATS_TEST_TMPDIR"
+  go() {                                    # fail only on the 2nd of 3 replays
+    local c="$BATS_TEST_TMPDIR/goc" n
+    n=$(( $(cat "$c" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$c"
+    [ "$n" -eq 2 ] && return 1 || return 0
+  }
+  REVERIFY_RUNS=3 run reproducer_reverifies FuzzX ./pkg
+  [ "$status" -eq 0 ]
+}
+
+@test "reproducer_reverifies: all REVERIFY_RUNS clean -> transient" {
+  LOG_DIR="$BATS_TEST_TMPDIR"
+  go() { return 0; }
+  REVERIFY_RUNS=3 run reproducer_reverifies FuzzX ./pkg
+  [ "$status" -ne 0 ]
+}
