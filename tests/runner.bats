@@ -164,3 +164,81 @@ setup() {
   [[ "$output" == /* ]]                                   # absolute, not "./..."
   [ "$output" = "$mod/testdata/fuzz/FuzzZ" ]
 }
+
+# --- dur_to_secs -------------------------------------------------------------
+
+@test "dur_to_secs parses h/m/s, combos, and bare integers" {
+  run dur_to_secs 15m;    [ "$output" = 900 ]
+  run dur_to_secs 2h;     [ "$output" = 7200 ]
+  run dur_to_secs 90s;    [ "$output" = 90 ]
+  run dur_to_secs 1h30m;  [ "$output" = 5400 ]
+  run dur_to_secs 120;    [ "$output" = 120 ]
+  run dur_to_secs "";     [ "$output" = 0 ]
+}
+
+# --- is_saturated ------------------------------------------------------------
+# Helper: seed a target's saturation history + last-run log used by the
+# exec-rate-scaled confirmation path.
+_seed() {  # _seed <fn> <sat-lines-newline-sep> <ratePerSec> <warmupGoDur>
+  STATE_DIR="$BATS_TEST_TMPDIR/state"; LOG_DIR="$BATS_TEST_TMPDIR/logs"
+  mkdir -p "$STATE_DIR/sat" "$LOG_DIR"
+  printf '%b' "$2" > "$STATE_DIR/sat/$1"
+  {
+    [ -n "$4" ] && echo "fuzz: elapsed: $4, gathering baseline coverage: 7/7 completed, now fuzzing with 6 workers"
+    [ -n "$3" ] && echo "fuzz: elapsed: 30s, execs: 999 ($3/sec)"
+    echo "fuzz: elapsed: 15m0s, execs: 9999 (0/sec)"   # final tick is 0/sec — must be skipped
+  } > "$LOG_DIR/$1.log"
+}
+
+@test "is_saturated: 3+ zero-growth runs is saturated; growth or too-few is not" {
+  _seed FuzzSat "0\n0\n0\n" "" ""
+  run is_saturated FuzzSat;   [ "$status" -eq 0 ]
+  _seed FuzzActive "0\n5\n0\n" "" ""
+  run is_saturated FuzzActive; [ "$status" -ne 0 ]
+  _seed FuzzWarm "0\n0\n" "" ""       # only 2 runs
+  run is_saturated FuzzWarm;  [ "$status" -ne 0 ]
+}
+
+# --- resolve_duration: exec-rate-scaled confirmation slices -------------------
+
+@test "resolve_duration: REWEIGHT off keeps the configured budget even when saturated" {
+  _seed FuzzX "0\n0\n0\n" 50000 1s
+  DEFAULT_FUZZTIME=15m REWEIGHT_CONFIRM=off run resolve_duration FuzzX
+  [ "$output" = 15m ]
+}
+
+@test "resolve_duration: saturated fast parser collapses to a short exec-budgeted slice" {
+  _seed FuzzFast "0\n0\n0\n" 50000 1s      # 5,000,000 / 50,000 = 100s; floor 10s; min 60s
+  DEFAULT_FUZZTIME=15m REWEIGHT_CONFIRM=on run resolve_duration FuzzFast
+  [ "$output" = 100s ]
+}
+
+@test "resolve_duration: saturated slow/crypto target stays proportionally longer (capped)" {
+  _seed FuzzSlow "0\n0\n0\n" 5000 16s      # 5,000,000 / 5,000 = 1000s; warmup floor 160s
+  DURATION_FuzzSlow=3h REWEIGHT_CONFIRM=on run resolve_duration FuzzSlow
+  [ "$output" = 1000s ]
+}
+
+@test "resolve_duration: CONFIRM_MIN_SLICE is the absolute floor" {
+  _seed FuzzTiny "0\n0\n0\n" 100000000 1s  # budget rounds to ~0s -> clamped to min
+  DEFAULT_FUZZTIME=15m REWEIGHT_CONFIRM=on CONFIRM_MIN_SLICE=60 run resolve_duration FuzzTiny
+  [ "$output" = 60s ]
+}
+
+@test "resolve_duration: confirmation never exceeds the configured budget" {
+  _seed FuzzShortCfg "0\n0\n0\n" 50000 1s  # budget 100s but configured is only 30s
+  DEFAULT_FUZZTIME=30s REWEIGHT_CONFIRM=on run resolve_duration FuzzShortCfg
+  [ "$output" = 30s ]
+}
+
+@test "resolve_duration: a still-active target keeps its full configured budget" {
+  _seed FuzzGrowing "0\n5\n0\n" 50000 1s
+  DEFAULT_FUZZTIME=15m REWEIGHT_CONFIRM=on run resolve_duration FuzzGrowing
+  [ "$output" = 15m ]
+}
+
+@test "resolve_duration: saturated but no measured rate falls back to configured (fail-safe)" {
+  _seed FuzzNoRate "0\n0\n0\n" "" ""       # no exec-rate tick in the log
+  DEFAULT_FUZZTIME=15m REWEIGHT_CONFIRM=on run resolve_duration FuzzNoRate
+  [ "$output" = 15m ]
+}
