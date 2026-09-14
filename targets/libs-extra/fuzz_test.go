@@ -5,11 +5,13 @@
 //   - OOM / memory blow-up   (rig cgroup MemoryMax)
 //   - CPU-time / algorithmic-complexity DoS  (per-input deadline, below)
 //   - correctness / wrong-but-not-crashing   (invariants, below)
+//
 // Versions pinned to what keyorix ships.
 package libsextra
 
 import (
 	"bytes"
+	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
 	"testing"
@@ -98,6 +100,11 @@ func FuzzTimestampParseResponse(f *testing.F) {
 // asymmetry — a class crash-only fuzzing cannot see.
 func FuzzTimestampParseRequest(f *testing.F) {
 	f.Add([]byte{0x30, 0x03, 0x02, 0x01, 0x01})
+	// A genuinely well-formed RFC3161 request — pushes the parser past the header
+	// into field decoding, which the minimal DER seed never reaches.
+	if b, err := (&timestamp.Request{HashAlgorithm: crypto.SHA256, HashedMessage: make([]byte, 32)}).Marshal(); err == nil {
+		f.Add(b)
+	}
 	f.Fuzz(func(t *testing.T, data []byte) {
 		var req *timestamp.Request
 		var err error

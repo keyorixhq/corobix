@@ -15,6 +15,8 @@ import (
 	"crypto/x509/pkix"
 	stdasn1 "encoding/asn1"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"math/big"
 	"net/url"
 	"testing"
@@ -48,11 +50,39 @@ func withinDeadline(t *testing.T, fn func()) {
 	}
 }
 
+// WebAuthn L3 §16 end-to-end spec test vectors (https://www.w3.org/TR/webauthn-3/#sctn-test-vectors) —
+// the same known-good seeds go-webauthn fuzzes its own parser with. Byte mutation never synthesizes a
+// valid CBOR attestationObject / authenticatorData from scratch, so without these the parser stalls at
+// the CBOR-shape gate (~4% lib coverage on 800+ corpus inputs); a real seed lets it reach the deep parse.
+func waHexToB64(hx string) string {
+	b, _ := hex.DecodeString(hx)
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+func waRegistrationSeed(credID, attObj, clientData string) []byte {
+	id := waHexToB64(credID)
+	b, _ := json.Marshal(map[string]any{"id": id, "rawId": id, "type": "public-key",
+		"response": map[string]any{"attestationObject": waHexToB64(attObj), "clientDataJSON": waHexToB64(clientData)}})
+	return b
+}
+
+func waAssertionSeed(credID, authData, clientData, sig string) []byte {
+	id := waHexToB64(credID)
+	b, _ := json.Marshal(map[string]any{"id": id, "rawId": id, "type": "public-key",
+		"response": map[string]any{"authenticatorData": waHexToB64(authData), "clientDataJSON": waHexToB64(clientData), "signature": waHexToB64(sig)}})
+	return b
+}
+
 // ---- go-webauthn: browser attestation/assertion (unauth ceremony endpoints)
 func FuzzWebAuthnCredentialResponse(f *testing.F) {
 	f.Add([]byte(`{}`))
 	f.Add([]byte(`{"id":"x","rawId":"eA","type":"public-key","response":{"clientDataJSON":"eyJ0IjoxfQ","attestationObject":"oA"}}`))
 	f.Add([]byte(`{"id":"x","rawId":"eA","type":"public-key","response":{"clientDataJSON":"eyJ0IjoxfQ","authenticatorData":"oA","signature":"oA"}}`))
+	f.Add(waRegistrationSeed("f91f391db4c9b2fde0ea70189cba3fb63f579ba6122b33ad94ff3ec330084be4", "a363666d74646e6f6e656761747453746d74a068617574684461746158a4bfabc37432958b063360d3ad6461c9c4735ae7f8edd46592a5e0f01452b2e4b559000000008446ccb9ab1db374750b2367ff6f3a1f0020f91f391db4c9b2fde0ea70189cba3fb63f579ba6122b33ad94ff3ec330084be4a5010203262001215820afefa16f97ca9b2d23eb86ccb64098d20db90856062eb249c33a9b672f26df61225820930a56b87a2fca66334b03458abf879717c12cc68ed73290af2e2664796b9220", "7b2274797065223a22776562617574686e2e637265617465222c226368616c6c656e6765223a22414d4d507434557878475453746e63647134313759447742466938767049612d7077386f4f755657345441222c226f726967696e223a2268747470733a2f2f6578616d706c652e6f7267222c2263726f73734f726967696e223a66616c73652c22657874726144617461223a22636c69656e74446174614a534f4e206d617920626520657874656e6465642077697468206164646974696f6e616c206669656c647320696e20746865206675747572652c207375636820617320746869733a20426b5165446a646354427258426941774a544c453551227d"))                                                                                                                                                                       // §16.2 None ES256
+	f.Add(waRegistrationSeed("455ef34e2043a87db3d4afeb39bbcb6cc32df9347c789a865ecdca129cbef58c", "a363666d74667061636b65646761747453746d74a263616c672663736967584630440220067a20754ab925005dbf378097c92120031581c73228d1fb4f5b881bcd7da98302207fc7b147558c7c0eba3af18bd9d121fa3d3a26d17fe3f220272178f473b6006d68617574684461746158a4bfabc37432958b063360d3ad6461c9c4735ae7f8edd46592a5e0f01452b2e4b55d00000000df850e09db6afbdfab51697791506cfc0020455ef34e2043a87db3d4afeb39bbcb6cc32df9347c789a865ecdca129cbef58ca5010203262001215820eb151c8176b225cc651559fecf07af450fd85802046656b34c18f6cf193843c5225820927b8aa427a2be1b8834d233a2d34f61f13bfd44119c325d5896e183fee484f2", "7b2274797065223a22776562617574686e2e637265617465222c226368616c6c656e6765223a2265476e4374334c55745936366b336a506a796e6962506b31716e666644616966715a774c33417032392d55222c226f726967696e223a2268747470733a2f2f6578616d706c652e6f7267222c2263726f73734f726967696e223a66616c73652c22657874726144617461223a22636c69656e74446174614a534f4e206d617920626520657874656e6465642077697468206164646974696f6e616c206669656c647320696e20746865206675747572652c207375636820617320746869733a205539685458764b453255526b4d6e625f307859485667227d")) // §16.3 Packed self ES256
+	f.Add(waRegistrationSeed("b8ad59b996047ab18e2ceb57206c362da57458793481f4a8ebf101c7ca7cc0f1", "a363666d74646e6f6e656761747453746d74a068617574684461746158a4bfabc37432958b063360d3ad6461c9c4735ae7f8edd46592a5e0f01452b2e4b5410000000097586fd09799a76401c200455099ef2a0020b8ad59b996047ab18e2ceb57206c362da57458793481f4a8ebf101c7ca7cc0f1a5010203262001215820a1c47c1d82da4ebe82cd72207102b380670701993bc35398ae2e5726427fe01d22582086c1080d82987028c7f54ecb1b01185de243b359294a0ed210cd47480f0adc88", "7b2274797065223a22776562617574686e2e637265617465222c226368616c6c656e6765223a225468394d595a68706e6a504254786b68555f53646667364f4e58665672454673587a72636b7151664a2d55222c226f726967696e223a2268747470733a2f2f6578616d706c652e6f7267222c2263726f73734f726967696e223a747275652c22746f704f726967696e223a2268747470733a2f2f6578616d706c652e636f6d227d"))                                                                                                                                                                                                                                                                                                                                                     // §16.5 None ES256 top-origin
+	f.Add(waAssertionSeed("f91f391db4c9b2fde0ea70189cba3fb63f579ba6122b33ad94ff3ec330084be4", "bfabc37432958b063360d3ad6461c9c4735ae7f8edd46592a5e0f01452b2e4b51900000000", "7b2274797065223a22776562617574686e2e676574222c226368616c6c656e6765223a224f63446e55685158756c5455506f334a5558543049393770767a7a59425039745a63685879617630314167222c226f726967696e223a2268747470733a2f2f6578616d706c652e6f7267222c2263726f73734f726967696e223a66616c73657d", "3046022100f50a4e2e4409249c4a853ba361282f09841df4dd4547a13a87780218deffcd380221008480ac0f0b93538174f575bf11a1dd5d78c6e486013f937295ea13653e331e87"))                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      // §16.2 assertion (None ES256)
+	f.Add(waAssertionSeed("455ef34e2043a87db3d4afeb39bbcb6cc32df9347c789a865ecdca129cbef58c", "bfabc37432958b063360d3ad6461c9c4735ae7f8edd46592a5e0f01452b2e4b50900000000", "7b2274797065223a22776562617574686e2e676574222c226368616c6c656e6765223a225248696843784e534e493352594d45314f7731476d3132786e726b634a5f6666707637546e2d4a71386773222c226f726967696e223a2268747470733a2f2f6578616d706c652e6f7267222c2263726f73734f726967696e223a66616c73652c22657874726144617461223a22636c69656e74446174614a534f4e206d617920626520657874656e6465642077697468206164646974696f6e616c206669656c647320696e20746865206675747572652c207375636820617320746869733a206754623533727a36456853576f6d58477a696d433151227d", "304402203310b9431903c401f1be2bdc8d23a4007682dbbddcf846994947b7f465daf84002204e94dd00047b316061b3b99772b7efd95994a83ef584b3b6b825ea3550251b66"))                                                                                                                                                                                                                                                                                                                                                          // §16.3 assertion (Packed self ES256)
 	f.Fuzz(func(t *testing.T, data []byte) {
 		withinDeadline(t, func() {
 			_, _ = protocol.ParseCredentialCreationResponseBytes(data)
@@ -150,6 +180,8 @@ func FuzzSAMLParseXMLResponse(f *testing.F) {
 func FuzzEtreeParse(f *testing.F) {
 	f.Add([]byte(`<a><b>c</b></a>`))
 	f.Add([]byte(`<?xml version="1.0"?><r x="1"><c/></r>`))
+	f.Add([]byte(`<?xml version="1.0" encoding="UTF-8"?><!-- c --><r xmlns:a="urn:x" a:k="v"><c><![CDATA[<x>&]]></c><?pi d?><e/></r>`))
+	f.Add([]byte("<r>&lt;&amp;&#xd;&#10;&#x9;</r>"))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		var reparseErr error
 		var reparseAttempted bool
