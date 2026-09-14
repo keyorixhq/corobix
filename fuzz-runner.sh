@@ -246,6 +246,38 @@ _find_repro_dir() {
   find "$PWD" -type d -path "*/testdata/fuzz/$1" 2>/dev/null | head -1
 }
 
+# reproducer_reverifies <fn> <pkg> -> 0 (REAL: the saved input re-fails on replay) or
+# 1 (TRANSIENT: it replays clean REVERIFY_RUNS times). A `go test -fuzz` non-zero exit
+# that leaves a reproducer is treated as a crash by the caller — but Go also writes a
+# "failing input" and exits non-zero when a fuzz WORKER dies for an EXTERNAL/resource
+# reason (watchdog kill under CPU/IO load, e.g. during a corpus git-push), blaming
+# whatever input was in flight. That input then replays clean. This replays the target's
+# seed corpus (which now includes the just-written input) as a normal test, up to
+# REVERIFY_RUNS times; ANY failure (including a REVERIFY_TIMEOUT hang, which is itself a
+# real finding) means the crash reproduces. Only an all-clean replay is downgraded to a
+# non-alert — so a genuinely reproducible crash is never suppressed. (2026-09-14: closes
+# the dashdiag "~92% of CRASH alerts are harness noise" class.)
+reproducer_reverifies() {
+  local fn="$1" pkg="$2" i
+  for ((i=1; i<=${REVERIFY_RUNS:-1}; i++)); do
+    if ! go test "$pkg" -run="^${fn}\$" -timeout="${REVERIFY_TIMEOUT:-2m}" >>"$LOG_DIR/${fn}.reverify.log" 2>&1; then
+      return 0   # re-failed → real crash
+    fi
+  done
+  return 1        # every replay passed → transient, not a real crash
+}
+
+# quarantine_unverified <fn> -> keep a LOCAL copy of a reproducer that did not re-verify,
+# under FINDINGS_DIR/<fn>/unverified-<ts>/, so a rare flaky-but-real crash is never lost —
+# it is just not paged or pushed to the shared crasher repo on a single clean replay.
+quarantine_unverified() {
+  local fn="$1" ts src dest
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  src="$(_find_repro_dir "$fn")"; [ -n "$src" ] || return 0
+  dest="$FINDINGS_DIR/$fn/unverified-$ts"; mkdir -p "$dest"
+  cp -a "$src"/. "$dest"/ 2>/dev/null || true
+}
+
 handle_crash() { # $1=fn $2=pkg $3=rc ; called only when a real reproducer exists
   local fn="$1" pkg="$2" rc="$3" ts src dest mode
   ts="$(date -u +%Y%m%dT%H%M%SZ)"; mode="$(effective_crash_mode)"
@@ -295,6 +327,9 @@ main() {
   # SATURATED target's slice is sized from its own throughput (see resolve_duration).
   : "${REWEIGHT_CONFIRM:=off}"; : "${CONFIRM_EXEC_BUDGET:=5000000}"; : "${CONFIRM_MIN_SLICE:=60}"
   : "${CONFIRM_WARMUP_MULT:=10}"; : "${CONFIRM_MIN_RUNS:=3}"
+  # Re-verify a reproducer before alerting/pushing (on = suppress transient worker
+  # deaths that don't actually reproduce; see reproducer_reverifies).
+  : "${REVERIFY_CRASH:=on}"; : "${REVERIFY_RUNS:=1}"; : "${REVERIFY_TIMEOUT:=2m}"
   local eff; eff="$(effective_crash_mode)"
   [ "$eff" = "${CRASH_MODE}" ] || echo "fuzz-runner: crash mode $CRASH_MODE -> $eff for standalone module (disclosure safety)" >&2
   CRASH_MODE="$eff"
@@ -333,7 +368,16 @@ main() {
     rc=$?
     d="$(find . -type d -path "*/testdata/fuzz/$fn" 2>/dev/null | head -1)"
     if [ -n "$d" ] && [ -n "$(ls -A "$d" 2>/dev/null)" ]; then
-      handle_crash "$fn" "$pkg" "$rc"
+      # A reproducer exists. Unless it re-verifies (replays and re-fails), treat it as a
+      # transient worker death — keep a local copy but do NOT alert or push. Only a
+      # confirmed-reproducing input reaches handle_crash. REVERIFY_CRASH=off restores the
+      # old always-alert behavior.
+      if [ "${REVERIFY_CRASH:-on}" = on ] && ! reproducer_reverifies "$fn" "$pkg"; then
+        log "$fn: reproducer did NOT re-fail on ${REVERIFY_RUNS:-1}x replay — transient worker death, not alerting (local copy kept in $FINDINGS_DIR/$fn)"
+        quarantine_unverified "$fn"
+      else
+        handle_crash "$fn" "$pkg" "$rc"
+      fi
     elif [ "$rc" -ne 0 ]; then
       log "$fn exited $rc with no reproducer — infra/timeout, logged not alerted"
     fi
