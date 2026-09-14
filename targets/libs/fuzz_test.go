@@ -3,8 +3,9 @@
 // front line). Versions pinned to keyorix go.mod. Mirrors the pkcs7 rig.
 //
 // Detection layers: panics/crashes (native), OOM (rig MemoryMax), CPU-time /
-// algorithmic-complexity DoS (withinDeadline), and — for etree — a round-trip
-// re-parse invariant (correctness, not just "doesn't crash").
+// algorithmic-complexity DoS (withinDeadline), round-trip re-parse (etree),
+// decoder differential (xasn1), and signature/verification-BYPASS rejection
+// invariants (JWT id_token verify, SAML response verify) — see per-target comments.
 package libsfuzz
 
 import (
@@ -66,6 +67,11 @@ var jwtParser = jwt.NewParser(
 	jwt.WithExpirationRequired(),
 )
 
+// FuzzJWTParseIDToken — crash + deadline + signature-BYPASS rejection invariant.
+// The parser pins asymmetric algs (no "none", no HS*) and verifies against a key
+// whose private half the fuzzer never holds, so no crafted token can legitimately
+// verify. Any token that comes back Valid is a real bypass (alg:none accepted,
+// alg-confusion, signature-strip, or the signature simply not being checked).
 func FuzzJWTParseIDToken(f *testing.F) {
 	key, _ := rsa.GenerateKey(rand.Reader, 2048)
 	keyfn := func(tok *jwt.Token) (interface{}, error) { return &key.PublicKey, nil }
@@ -73,10 +79,15 @@ func FuzzJWTParseIDToken(f *testing.F) {
 	f.Add("a.b.c")
 	f.Add("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.")
 	f.Fuzz(func(t *testing.T, raw string) {
+		var tok *jwt.Token
+		var perr error
 		withinDeadline(t, func() {
 			var claims jwt.MapClaims
-			_, _ = jwtParser.ParseWithClaims(raw, &claims, keyfn)
+			tok, perr = jwtParser.ParseWithClaims(raw, &claims, keyfn)
 		})
+		if perr == nil && tok != nil && tok.Valid {
+			t.Fatalf("JWT SIGNATURE BYPASS: a token we never signed verified as valid: %q", raw)
+		}
 	})
 }
 
@@ -108,15 +119,24 @@ func newTestSP() *saml.ServiceProvider {
 	}
 }
 
+// FuzzSAMLParseXMLResponse — crash + deadline + signature-BYPASS rejection invariant.
+// The SP is configured with an IdP signing cert whose private key the fuzzer does
+// NOT hold, and crewjam/saml verifies the response/assertion signature against that
+// cert. So no crafted response can carry a signature valid under it — ParseXMLResponse
+// must ALWAYS return an error here. Any success is a signature-verification bypass:
+// a forged assertion accepted, KeyInfo/embedded-cert spoofing, an XML
+// canonicalization / comment-injection bypass, or the signature not actually checked.
 func FuzzSAMLParseXMLResponse(f *testing.F) {
 	sp := newTestSP()
 	cur := url.URL{Scheme: "https", Host: "sp.example.com", Path: "/saml/acs"}
 	f.Add([]byte(`<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"></samlp:Response>`))
 	f.Add([]byte(`<Response/>`))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		withinDeadline(t, func() {
-			_, _ = sp.ParseXMLResponse(data, []string{"id-1"}, cur)
-		})
+		var perr error
+		withinDeadline(t, func() { _, perr = sp.ParseXMLResponse(data, []string{"id-1"}, cur) })
+		if perr == nil {
+			t.Fatalf("SAML SIGNATURE BYPASS: ParseXMLResponse accepted a response we never signed: %q", data)
+		}
 	})
 }
 
