@@ -1,0 +1,26 @@
+[Unit]
+Description=libs-extra continuous fuzzer (untrusted-input third-party candidates not fuzzed upstream)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=andrei
+WorkingDirectory=/home/andrei/proj/libs-extra-fuzz
+Environment=HOME=/home/andrei
+Environment=PATH=/snap/go/current/bin:/usr/bin:/bin
+Environment=GOPATH=/home/andrei/go
+# Shares the runner copy with dashdiag-fuzz on this box, so FUZZ_CONF is set
+# explicitly to this rig's own conf (SCRIPT_DIR/fuzz.conf would be dashdiag's).
+Environment=FUZZ_CONF=/home/andrei/proj/libs-extra-fuzz/fuzz.conf
+ExecStart=/home/andrei/proj/fuzz-harness/fuzz-runner.sh
+Restart=on-failure
+RestartSec=30
+MemoryMax=3000M
+MemorySwapMax=0
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=libs-extra-fuzz
+
+[Install]
+WantedBy=multi-user.target

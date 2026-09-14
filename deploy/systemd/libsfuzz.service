@@ -1,0 +1,26 @@
+[Unit]
+Description=Third-party libs fuzz rotation (fuzz-harness runner)
+After=network.target
+
+[Service]
+Type=simple
+# pve01 runs as root (its own LXC/host); the andrei-user rigs run as andrei.
+Environment=HOME=/root
+Environment=PATH=/usr/local/go/bin:/usr/bin:/bin
+Environment=GOPATH=/root/go
+Environment=GOMODCACHE=/root/go/pkg/mod
+Environment=GOCACHE=/root/.cache/go-build
+Environment=GOTOOLCHAIN=auto
+# Runner + its fuzz.conf both live in /root/libs-fuzz (SCRIPT_DIR default).
+ExecStart=/root/libs-fuzz/fuzz-runner.sh
+Restart=on-failure
+RestartSec=10
+# Dedicated box with more RAM.
+MemoryMax=12G
+MemorySwapMax=0
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=libsfuzz
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,36 @@
+[Unit]
+Description=Keyorix continuous fuzz rotation (fuzz-harness runner)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=andrei
+Group=andrei
+Environment=HOME=/home/andrei
+Environment=PATH=/snap/go/current/bin:/usr/bin:/bin
+Environment=GOPATH=/home/andrei/go
+# Rig-local secrets/env (CORPUS_REPO deploy key, etc.); optional (-) so a
+# missing file does not fail the unit. NOT tracked here — it lives only on the rig.
+EnvironmentFile=-/etc/keyorix-fuzz/config.env
+# The runner finds its config at $FUZZ_CONF, else $SCRIPT_DIR/fuzz.conf (the
+# fuzz.conf beside this runner copy). Keyorix's fuzz.conf is at
+# /home/andrei/proj/fuzz-harness/fuzz.conf.
+ExecStart=/home/andrei/proj/fuzz-harness/fuzz-runner.sh
+Restart=always
+RestartSec=30
+Nice=10
+# Box has 8 vCPU; leave one for the host.
+CPUQuota=700%
+# Box has 7.8G RAM; normal fuzzing sits ~4G. 5500M trips the cgroup well before
+# the box OOMs; MemorySwapMax=0 forces a clean OOM-kill rather than thrashing —
+# an amplification/OOM-class bug (e.g. the ber2der DoS class) is contained and
+# recorded, not allowed to take down the box.
+MemoryMax=5500M
+MemorySwapMax=0
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=keyorix-fuzz
+
+[Install]
+WantedBy=multi-user.target
