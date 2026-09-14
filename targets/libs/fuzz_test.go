@@ -150,6 +150,8 @@ func FuzzSAMLParseXMLResponse(f *testing.F) {
 func FuzzEtreeParse(f *testing.F) {
 	f.Add([]byte(`<a><b>c</b></a>`))
 	f.Add([]byte(`<?xml version="1.0"?><r x="1"><c/></r>`))
+	f.Add([]byte(`<?xml version="1.0" encoding="UTF-8"?><!-- c --><r xmlns:a="urn:x" a:k="v"><c><![CDATA[<x>&]]></c><?pi d?><e/></r>`))
+	f.Add([]byte("<r>&lt;&amp;&#xd;&#10;&#x9;</r>"))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		var reparseErr error
 		var reparseAttempted bool
