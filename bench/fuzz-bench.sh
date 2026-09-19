@@ -240,7 +240,13 @@ run_throughput_target() {
 		return
 	fi
 	log "throughput: $fn -parallel=$parallel -fuzztime=$duration"
-	local gocache="$GOCACHE_ROOT/throughput-$fn-p$parallel"
+	# One GOCACHE shared across the whole run (isolated from production's own
+	# GOCACHE, per the spec) rather than one per target: build/link time is
+	# NOT part of go's reported fuzz "elapsed" clock (that starts only once
+	# fuzzing itself begins), so a warm shared cache doesn't taint throughput
+	# numbers — it only avoids re-paying the same stdlib/shared-dependency
+	# compile cost on every single target and parallel level.
+	local gocache="$GOCACHE_ROOT/shared"
 	local logfile="$RAW_DIR/throughput-$fn-p$parallel.log"
 	local rssfile="$RAW_DIR/throughput-$fn-p$parallel.rss"
 	mkdir -p "$gocache"
@@ -265,7 +271,7 @@ run_parallel_target() {
 			continue
 		fi
 		log "parallel-scaling: $fn -parallel=$p -fuzztime=$DUR_PARALLEL"
-		local gocache="$GOCACHE_ROOT/parallel-$fn-p$p"
+		local gocache="$GOCACHE_ROOT/shared" # see run_throughput_target for why this is shared
 		local logfile="$RAW_DIR/parallel-$fn-p$p.log"
 		mkdir -p "$gocache"
 		env -C "$module_dir" GOCACHE="$gocache" "$GO_BIN" test "$pkg" \
@@ -328,6 +334,20 @@ ttf_run_case() {
 
 		"$setup_fn" "$case_dir"
 		record_sha "$case_dir" "ttf_${case_name}_after_revert_note"
+
+		# A revert built from "every file the fix commit MODIFIED" can produce
+		# code that doesn't compile when the fix's own regression test calls a
+		# symbol the SAME commit introduced (the test isn't just exercising old
+		# code — it exercises the new recovery/fix path directly). Confirm the
+		# reverted tree actually builds before trusting any TTF timing from it;
+		# a build failure must never be silently read as "bug not found".
+		local buildlog="$RAW_DIR/ttf-$case_name-postrevert-build.log"
+		if ! env -C "$case_dir" GOCACHE="$gocache" "$GO_BIN" test -c -o /dev/null "$pkg" >"$buildlog" 2>&1; then
+			note "ttf: $case_name DOES NOT COMPILE AFTER REVERT — skipping (the fix's own regression test likely calls a symbol the fix itself introduced; see raw/$(basename "$buildlog")). Not mechanically revertible by file-level revert; needs a hand-authored partial patch if this case matters."
+			mark_done "ttf_setup__${case_name}"
+			mark_done "ttf_skip__${case_name}"
+			return
+		fi
 		mark_done "ttf_setup__${case_name}"
 	fi
 	if is_done "ttf_skip__${case_name}"; then
@@ -381,8 +401,14 @@ if [ "$ROLE" = keyorix ]; then
 		mark_done "clone__keyorix"
 	fi
 
+	# KEYORIX_TEST_PG_DSN only lives in the production fuzz.conf, which this
+	# script deliberately never sources (hard rule: don't touch fuzz.conf).
+	# Default to the known-local PG this rig's fuzz.conf points at; on a rig
+	# without that listener (or the env var already set to something else)
+	# the TCP probe below decides, so this stays portable to OCI/spot too.
+	KEYORIX_TEST_PG_DSN="${KEYORIX_TEST_PG_DSN:-host=127.0.0.1 port=59432 user=fuzz dbname=fuzz sslmode=disable}"
 	PG_OK=0
-	if [ -n "${KEYORIX_TEST_PG_DSN:-}" ] && timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/59432' 2>/dev/null; then
+	if timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/59432' 2>/dev/null; then
 		PG_OK=1
 		export KEYORIX_TEST_PG_DSN
 	fi
