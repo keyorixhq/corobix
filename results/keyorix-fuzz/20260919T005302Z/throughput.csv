@@ -1,0 +1,5 @@
+rig,target,parallel,elapsed_s,execs,execs_per_s,new_interesting,total_corpus,peak_rss_kb,build_s,note
+keyorix-fuzz,FuzzPATRestrictionAllows,7,900,4811220,5345,34,39,2067260,119,
+keyorix-fuzz,FuzzAEADTamperRoundTrip,7,900,7864806,8738,12,16,626560,9,
+keyorix-fuzz,FuzzKEKRotationCrashConsistency,7,902,2285,2,9,20,627200,8,
+keyorix-fuzz,FuzzStorageBackendDifferential,7,901,453327,503,753,755,898092,19,

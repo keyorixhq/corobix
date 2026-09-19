@@ -1,0 +1,2 @@
+rig,target,parallel,elapsed_s,execs,execs_per_s,new_interesting,total_corpus,peak_rss_kb,build_s,note
+dashdiag-fuzz,FuzzParseSystemdTime,7,900,22064695,24516,179,186,941948,31,
