@@ -187,9 +187,28 @@ clone_pinned() {
 	git -C "$dest" checkout --quiet --detach "$sha"
 }
 
-record_sha() {
+# copy_pinned <source-dir> <dest-dir> — plain recursive copy for a source
+# that isn't a git checkout at all (e.g. libs-extra-fuzz on the rig, which is
+# a flat rsync/scp-deployed snapshot with no .git — DEPLOYED_FROM.txt is the
+# only provenance it carries).
+copy_pinned() {
+	local src="$1" dest="$2"
+	rm -rf "$dest"
+	cp -r "$src" "$dest"
+}
+
+# record_provenance <dir> <label> — git SHA if $dir is a checkout, else the
+# git_sha this deployed snapshot's DEPLOYED_FROM.txt records, else "unknown".
+record_provenance() {
 	local dir="$1" label="$2"
-	printf '%s: %s\n' "$label" "$(git -C "$dir" rev-parse HEAD)" >>"$HW_TXT"
+	if [ -d "$dir/.git" ]; then
+		printf '%s: %s\n' "$label" "$(git -C "$dir" rev-parse HEAD)" >>"$HW_TXT"
+	elif [ -f "$dir/DEPLOYED_FROM.txt" ]; then
+		printf '%s (deployed snapshot, not a git checkout): %s\n' "$label" \
+			"$(grep '^git_sha=' "$dir/DEPLOYED_FROM.txt")" >>"$HW_TXT"
+	else
+		printf '%s: unknown (no .git, no DEPLOYED_FROM.txt)\n' "$label" >>"$HW_TXT"
+	fi
 }
 
 # ---------------------------------------------------------------------------
@@ -303,22 +322,40 @@ ttf_revert_keyorix_commit() {
 		done
 }
 
-ttf_reset_corpus() {
+ttf_reset_corpus_git() {
 	# wipe any discovered/crash corpus from the previous rep, keep checked-in seeds
 	local dir="$1" pkg_dir="$2" fn="$3"
 	git -C "$dir" clean -fdxq -- "${pkg_dir#./}/testdata/fuzz/$fn" 2>/dev/null || true
 }
 
+ttf_reset_corpus_copy() {
+	# same job as ttf_reset_corpus_git, for a case_dir with no .git to clean
+	# against: snapshot the checked-in seed corpus on first call (once, next
+	# to case_dir so it survives repeated resets), then restore it every call.
+	local dir="$1" pkg_dir="$2" fn="$3"
+	local corpus_dir="$dir/${pkg_dir#./}/testdata/fuzz/$fn"
+	local snap="${dir}.corpus-snapshot"
+	if [ ! -d "$snap" ]; then
+		mkdir -p "$snap"
+		[ -d "$corpus_dir" ] && cp -r "$corpus_dir" "$snap/seed"
+	fi
+	rm -rf "$corpus_dir"
+	if [ -d "$snap/seed" ]; then
+		mkdir -p "$(dirname "$corpus_dir")"
+		cp -r "$snap/seed" "$corpus_dir"
+	fi
+}
+
 ttf_run_case() {
-	# ttf_run_case <case_name> <src> <sha-or-empty> <pkg> <fn> <pkg_dir_for_clean> <setup_fn>
-	local case_name="$1" src="$2" pin="$3" pkg="$4" fn="$5" pkg_dir="$6" setup_fn="$7"
+	# ttf_run_case <case_name> <pkg> <fn> <pkg_dir_for_clean> <materialize_fn> <revert_fn> <reset_fn>
+	local case_name="$1" pkg="$2" fn="$3" pkg_dir="$4" materialize_fn="$5" revert_fn="$6" reset_fn="$7"
 	local case_dir="$SRC_ROOT/ttf-$case_name"
 	local gocache="$GOCACHE_ROOT/ttf-$case_name"
 	mkdir -p "$gocache"
 
 	if ! is_done "ttf_setup__${case_name}"; then
-		clone_pinned "$src" "$case_dir" "$pin"
-		record_sha "$case_dir" "ttf_${case_name}_pinned"
+		"$materialize_fn" "$case_dir"
+		record_provenance "$case_dir" "ttf_${case_name}_pinned"
 
 		# confirm the UNREVERTED target runs clean before introducing the bug,
 		# so "found" downstream really means the restored bug and not noise.
@@ -332,8 +369,8 @@ ttf_run_case() {
 			return
 		fi
 
-		"$setup_fn" "$case_dir"
-		record_sha "$case_dir" "ttf_${case_name}_after_revert_note"
+		"$revert_fn" "$case_dir"
+		record_provenance "$case_dir" "ttf_${case_name}_after_revert_note"
 
 		# A revert built from "every file the fix commit MODIFIED" can produce
 		# code that doesn't compile when the fix's own regression test calls a
@@ -360,7 +397,7 @@ ttf_run_case() {
 		if is_done "$key"; then
 			continue
 		fi
-		ttf_reset_corpus "$case_dir" "$pkg_dir" "$fn"
+		"$reset_fn" "$case_dir" "$pkg_dir" "$fn"
 		log "ttf: $case_name rep $rep/$TTF_REPS (cap ${TTF_CAP_S}s)"
 		local logfile="$RAW_DIR/ttf-$case_name-rep$rep.log"
 		local t0=$SECONDS
@@ -397,7 +434,7 @@ if [ "$ROLE" = keyorix ]; then
 	if ! is_done "clone__keyorix"; then
 		PINNED_SHA="$(git -C "$KEYORIX_SRC" rev-parse HEAD)"
 		clone_pinned "$KEYORIX_SRC" "$KEYORIX_DIR" "$PINNED_SHA"
-		record_sha "$KEYORIX_DIR" "keyorix_pinned"
+		record_provenance "$KEYORIX_DIR" "keyorix_pinned"
 		mark_done "clone__keyorix"
 	fi
 
@@ -425,15 +462,17 @@ if [ "$ROLE" = keyorix ]; then
 	run_parallel_target "$KEYORIX_DIR" ./internal/core FuzzPATRestrictionAllows
 	run_parallel_target "$KEYORIX_DIR" ./internal/encryption FuzzAEADTamperRoundTrip
 
+	ttf_materialize_keyorix() { clone_pinned "$KEYORIX_SRC" "$1" "$(git -C "$KEYORIX_SRC" rev-parse HEAD)"; }
+
 	ttf_revert_keyorix_commit_case_a() { ttf_revert_keyorix_commit "$1" daf8b889e110d4c8e11b1ca2df7f4202e793c03d; }
-	ttf_run_case case_a__FuzzParseResponse_pr1889 "$KEYORIX_SRC" "$(git -C "$KEYORIX_SRC" rev-parse HEAD)" \
+	ttf_run_case case_a__FuzzParseResponse_pr1889 \
 		./internal/saml FuzzParseResponse ./internal/saml \
-		'ttf_revert_keyorix_commit_case_a'
+		'ttf_materialize_keyorix' 'ttf_revert_keyorix_commit_case_a' 'ttf_reset_corpus_git'
 
 	ttf_revert_keyorix_commit_case_b() { ttf_revert_keyorix_commit "$1" b27f0095d0b07aa5f75d7c4b697ea211ffab3f5e; }
-	ttf_run_case case_b__FuzzDEKSweepCrashConsistency_pr1918 "$KEYORIX_SRC" "$(git -C "$KEYORIX_SRC" rev-parse HEAD)" \
+	ttf_run_case case_b__FuzzDEKSweepCrashConsistency_pr1918 \
 		./internal/encryption FuzzDEKSweepCrashConsistency ./internal/encryption \
-		'ttf_revert_keyorix_commit_case_b'
+		'ttf_materialize_keyorix' 'ttf_revert_keyorix_commit_case_b' 'ttf_reset_corpus_git'
 fi
 
 if [ "$ROLE" = dashdiag ]; then
@@ -441,22 +480,18 @@ if [ "$ROLE" = dashdiag ]; then
 	if ! is_done "clone__dashdiag"; then
 		PINNED_SHA="$(git -C "$DASHDIAG_SRC" rev-parse HEAD)"
 		clone_pinned "$DASHDIAG_SRC" "$DASHDIAG_DIR" "$PINNED_SHA"
-		record_sha "$DASHDIAG_DIR" "dashdiag_pinned"
+		record_provenance "$DASHDIAG_DIR" "dashdiag_pinned"
 		mark_done "clone__dashdiag"
 	fi
 	note "dashdiag collector chosen: FuzzParseSystemdTime (internal/collectors/fuzz_time_parsers_linux_test.go) — pure string parser, no host syscalls, fast+stable"
 	run_throughput_target "$DASHDIAG_DIR" ./internal/collectors FuzzParseSystemdTime "$DUR_THROUGHPUT" "$NPROC"
 
-	LIBSEXTRA_DIR="$SRC_ROOT/libs-extra-fuzz"
-	if ! is_done "clone__libsextra"; then
-		PINNED_SHA="$(git -C "$LIBSEXTRA_SRC" rev-parse HEAD)"
-		clone_pinned "$LIBSEXTRA_SRC" "$LIBSEXTRA_DIR" "$PINNED_SHA"
-		record_sha "$LIBSEXTRA_DIR" "libsextra_pinned"
-		mark_done "clone__libsextra"
-	fi
-	ttf_run_case case_c__FuzzTimestampParseResponse_pkcs7 "$LIBSEXTRA_SRC" "$(git -C "$LIBSEXTRA_SRC" rev-parse HEAD)" \
+	# libs-extra-fuzz is a flat rsync/scp-deployed snapshot on this rig (see
+	# DEPLOYED_FROM.txt), not a git checkout — copy_pinned, not clone_pinned.
+	ttf_materialize_libsextra() { copy_pinned "$LIBSEXTRA_SRC" "$1"; }
+	ttf_run_case case_c__FuzzTimestampParseResponse_pkcs7 \
 		. FuzzTimestampParseResponse . \
-		'ttf_setup_libsextra_old_pkcs7'
+		'ttf_materialize_libsextra' 'ttf_setup_libsextra_old_pkcs7' 'ttf_reset_corpus_copy'
 fi
 
 # ---------------------------------------------------------------------------
