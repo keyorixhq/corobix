@@ -17,7 +17,7 @@ Role: dashdiag   Dry run: no
 
 | case | reps found | median seconds |
 |---|---|---|
-| case_c__FuzzTimestampParseResponse_pkcs7 | 0/5 | 14 |
+| case_c__FuzzTimestampParseResponse_pkcs7 | 5/5 | 14 |
 
 ## Notes
 

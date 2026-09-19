@@ -535,9 +535,11 @@ fi
 	echo "|---|---|---|"
 	for case_name in case_a__FuzzParseResponse_pr1889 case_b__FuzzDEKSweepCrashConsistency_pr1918 case_c__FuzzTimestampParseResponse_pkcs7; do
 		grep -q ",$case_name," "$TTF_CSV" 2>/dev/null || continue
-		vals="$(grep ",$case_name," "$TTF_CSV" | awk -F, '{print $5}' | sort -n)"
-		n_found="$(grep -c ",$case_name,true," "$TTF_CSV" 2>/dev/null | tr -d ' ')"
-		n_total="$(grep -c ",$case_name," "$TTF_CSV" | tr -d ' ')"
+		vals="$(awk -F, -v c="$case_name" '$2==c{print $5}' "$TTF_CSV" | sort -n)"
+		# columns are rig,case,rep,found,seconds,cap_s — rep sits between case
+		# and found, so a plain ",$case_name,true," substring match never hits.
+		n_found="$(awk -F, -v c="$case_name" '$2==c && $4=="true"' "$TTF_CSV" | wc -l | tr -d ' ')"
+		n_total="$(awk -F, -v c="$case_name" '$2==c' "$TTF_CSV" | wc -l | tr -d ' ')"
 		median="$(echo "$vals" | awk '{a[NR]=$1} END{if(NR==0){print "n/a"}else{print a[int((NR+1)/2)]}}')"
 		echo "| $case_name | $n_found/$n_total | $median |"
 	done
