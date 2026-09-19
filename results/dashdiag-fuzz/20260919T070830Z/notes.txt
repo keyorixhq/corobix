@@ -1,0 +1,1 @@
+dashdiag collector chosen: FuzzParseSystemdTime (internal/collectors/fuzz_time_parsers_linux_test.go) — pure string parser, no host syscalls, fast+stable

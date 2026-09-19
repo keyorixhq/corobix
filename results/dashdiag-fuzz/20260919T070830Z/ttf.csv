@@ -1,0 +1,6 @@
+rig,case,rep,found,seconds,cap_s
+dashdiag-fuzz,case_c__FuzzTimestampParseResponse_pkcs7,1,true,21,3600
+dashdiag-fuzz,case_c__FuzzTimestampParseResponse_pkcs7,2,true,14,3600
+dashdiag-fuzz,case_c__FuzzTimestampParseResponse_pkcs7,3,true,14,3600
+dashdiag-fuzz,case_c__FuzzTimestampParseResponse_pkcs7,4,true,6,3600
+dashdiag-fuzz,case_c__FuzzTimestampParseResponse_pkcs7,5,true,4,3600
