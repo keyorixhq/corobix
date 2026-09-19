@@ -315,10 +315,19 @@ ttf_revert_keyorix_commit() {
 	# ttf_revert_keyorix_commit <case_dir> <fix_sha> — revert every file that
 	# commit MODIFIED (not ADDED), restoring pre-fix behaviour while leaving
 	# the fix's own new fuzz-test file(s) in place so the target still exists.
+	# Never silently drop a failed per-file revert: a later commit editing the
+	# SAME shared file (docs/security-closures.tsv, targets.conf — anything
+	# appended-to by many unrelated PRs) can make an old patch fail to reverse-
+	# apply cleanly even though the file that actually matters reverted fine.
+	# That's tolerable for a bookkeeping file (the post-revert build check is
+	# the real safety net for anything that changes behaviour) but it must be
+	# recorded, not just left in stderr for someone to notice by accident.
 	local dir="$1" fix_sha="$2" f
 	git -C "$dir" diff --name-status "${fix_sha}^1" "$fix_sha" | awk '$1=="M"{print $2}' |
 		while IFS= read -r f; do
-			git -C "$dir" show "$fix_sha" -- "$f" | git -C "$dir" apply -R
+			if ! git -C "$dir" show "$fix_sha" -- "$f" | git -C "$dir" apply -R 2>>"$NOTES_FILE"; then
+				note "ttf: revert of $fix_sha did not cleanly apply to $f (likely edited again by a later commit) — left as-is; harmless unless \$f changes program behaviour, see post-revert build check"
+			fi
 		done
 }
 
