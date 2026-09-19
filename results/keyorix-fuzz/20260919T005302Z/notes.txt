@@ -1,0 +1,1 @@
+ttf: case_b__FuzzDEKSweepCrashConsistency_pr1918 DOES NOT COMPILE AFTER REVERT — skipping (the fix's own regression test likely calls a symbol the fix itself introduced; see raw/ttf-case_b__FuzzDEKSweepCrashConsistency_pr1918-postrevert-build.log). Not mechanically revertible by file-level revert; needs a hand-authored partial patch if this case matters.

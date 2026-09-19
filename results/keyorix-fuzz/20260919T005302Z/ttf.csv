@@ -1,0 +1,4 @@
+rig,case,rep,found,seconds,cap_s
+keyorix-fuzz,case_a__FuzzParseResponse_pr1889,1,false,3600,3600
+keyorix-fuzz,case_a__FuzzParseResponse_pr1889,2,false,3600,3600
+keyorix-fuzz,case_a__FuzzParseResponse_pr1889,3,false,3600,3600

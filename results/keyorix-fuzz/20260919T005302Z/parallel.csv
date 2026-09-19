@@ -1,0 +1,9 @@
+rig,target,parallel,elapsed_s,execs,execs_per_s,new_interesting,total_corpus,execs_per_s_per_worker
+keyorix-fuzz,FuzzPATRestrictionAllows,1,300,268111,893,0,39,893
+keyorix-fuzz,FuzzPATRestrictionAllows,2,300,545911,1819,0,39,909
+keyorix-fuzz,FuzzPATRestrictionAllows,4,300,1108560,3695,0,39,923
+keyorix-fuzz,FuzzPATRestrictionAllows,7,300,1611486,5371,0,39,767
+keyorix-fuzz,FuzzAEADTamperRoundTrip,1,300,424634,1415,3,19,1415
+keyorix-fuzz,FuzzAEADTamperRoundTrip,2,300,856797,2855,1,20,1427
+keyorix-fuzz,FuzzAEADTamperRoundTrip,4,300,1784437,5948,1,21,1487
+keyorix-fuzz,FuzzAEADTamperRoundTrip,7,300,2615304,8717,1,22,1245
