@@ -127,3 +127,28 @@ remote_commits() { git --git-dir="$T/corpus.git" rev-list --count main; }
   remote_has "$B/abc123"
   [ "$(remote_commits)" -ge "$c1" ]
 }
+
+@test "HARVEST_EXCLUDE dirs (mutation-testing corpus copies) are not harvested" {
+  M="$HOME/mut-work/widget-mut"; mkdir -p "$M/pkg/testdata/fuzz/FuzzM"
+  git init -q "$M"; echo x > "$M/pkg/testdata/fuzz/FuzzM/corpus1"
+  run "$H" --dry-run
+  [[ "$output" != *FuzzM* ]]
+  [[ "$output" == *"NEW    $B"* ]]
+}
+
+@test "a scan with more than HARVEST_MAX_NEW new inputs is refused: nothing pushed, --check alerts" {
+  HARVEST_MAX_NEW=0 run "$H"
+  [ "$(remote_commits)" -eq 1 ]
+  [ ! -d "$HARVEST_STATE/spool/$B" ]
+  run "$H" --check
+  [ "$status" -eq 2 ]
+  [[ "$output" == *REFUSED* ]]
+}
+
+@test "the same input in two checkouts (a replay copy) is one bundle" {
+  C="$HOME/replay"; mkdir -p "$C/internal/foo/testdata/fuzz/FuzzX"
+  echo "module example.com/acme/widget" > "$C/go.mod"; git init -q "$C"
+  cp "$HOME/work/widget/internal/foo/testdata/fuzz/FuzzX/abc123" "$C/internal/foo/testdata/fuzz/FuzzX/"
+  run "$H" --dry-run
+  [[ "$output" == *"-- 1 new input(s)"* ]]
+}
