@@ -7,11 +7,14 @@
 # `go test -fuzz` directly; 12 failing inputs on vcd-dashdiag-fuzz sat untracked in a
 # checkout for ~24h — never pushed, never archived, and a watchdog judged them "old".
 # Go writes testdata/fuzz/<Fn>/<file> ONLY when a target fails, so an untracked file
-# there IS a finding. This script keys on that file, not on any runner's bookkeeping.
+# there IS a finding — EXCEPT where a tool copies a whole corpus into testdata/ (the
+# mutation-testing work dirs under ~/mut-work do: ~80k files). Those dirs go in
+# HARVEST_EXCLUDE, and HARVEST_MAX_NEW refuses any scan that looks like a corpus dump.
 #
 # Default mode (cron, every 5 min):
-#   1. scan   every git checkout under HARVEST_ROOTS -> untracked */testdata/fuzz/<Fn>/<file>
-#             (git-ignored files included: ls-files --others without --exclude-standard)
+#   1. scan   every git checkout under HARVEST_ROOTS (minus HARVEST_EXCLUDE) -> untracked
+#             */testdata/fuzz/<Fn>/<file> (git-ignored included). > HARVEST_MAX_NEW new in
+#             one scan -> refuse, alert, spool nothing (fix the exclude list first).
 #   2. spool  each new one -> $HARVEST_STATE/spool/<project>/<pkg>/<Fn>/<file>/ with the
 #             input, meta.txt and every *.log under HARVEST_LOG_ROOTS that names it.
 #             Local copy FIRST: a later git clean / reclone / checkout can't lose it.
@@ -19,8 +22,8 @@
 #             sparse clone; fetch/reset/retry like fuzz-runner's push_to_main). Only
 #             after a successful push does a bundle move to $HARVEST_STATE/archive/.
 # --check        exit 2 with ALERT lines if: an input on disk is neither spooled nor
-#                archived; a bundle is unpushed > HARVEST_ALERT_MIN; or the last scan is
-#                older than HARVEST_STALE_MIN (harvester not running). Else prints OK.
+#                archived; a bundle is unpushed > HARVEST_ALERT_MIN; the last scan was
+#                refused; or the last scan is older than HARVEST_STALE_MIN. Else OK.
 # --dry-run      list what the next tick would harvest; writes nothing.
 # --install-cron idempotently install the */5 crontab line (marker "# fuzz-harvest").
 #
@@ -31,6 +34,8 @@ set -uo pipefail
 HARVEST_STATE=${HARVEST_STATE:-$HOME/.fuzz-harvest}
 HARVEST_ROOTS=${HARVEST_ROOTS:-$HOME}            # space-separated
 HARVEST_LOG_ROOTS=${HARVEST_LOG_ROOTS:-$HARVEST_ROOTS}
+HARVEST_EXCLUDE=${HARVEST_EXCLUDE:-*/mut-work}   # space-separated find -path globs, pruned
+HARVEST_MAX_NEW=${HARVEST_MAX_NEW:-50}           # more new inputs in one scan = corpus dump: refuse
 HARVEST_MAX_DEPTH=${HARVEST_MAX_DEPTH:-6}        # how deep to look for checkouts
 HARVEST_MAX_LOGS=${HARVEST_MAX_LOGS:-5}
 HARVEST_MAX_LOG_BYTES=${HARVEST_MAX_LOG_BYTES:-2000000}   # a log is tail-truncated to this
@@ -44,6 +49,7 @@ GIT_EMAIL=${GIT_EMAIL:-fuzz-harvest@$HARVEST_HOST}
 NOTIFY_URL=${NOTIFY_URL:-}
 
 SPOOL="$HARVEST_STATE/spool"; ARCHIVE="$HARVEST_STATE/archive"; STATUS="$HARVEST_STATE/status"
+REFUSED="$HARVEST_STATE/refused"
 
 hlog()   { echo "[$(date -u +%FT%TZ)] $*"; }
 notify() { [ -n "$NOTIFY_URL" ] && curl -fsS -m 10 -d "$1" "$NOTIFY_URL" >/dev/null 2>&1 || true; }
@@ -53,18 +59,19 @@ sha256_of()   { if command -v sha256sum >/dev/null; then sha256sum "$1"; else sh
 mtime_epoch() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
 epoch_utc()   { date -u -d "@$1" +%FT%TZ 2>/dev/null || date -u -r "$1" +%FT%TZ; }
 count_dirs4() { [ -d "$1" ] || { echo 0; return; }; (cd "$1" && find . -mindepth 4 -maxdepth 4 -type d | wc -l | tr -d ' '); }
+count_lines() { printf '%s' "$1" | grep -c .; }
 
 # --- scan ---------------------------------------------------------------------------
 # find_repos -> top dir of every git checkout (dir or worktree .git file) under the
-# roots. Build/module caches and our own state are pruned: they are huge and hold
-# only tracked/third-party seeds, never a first-run failing input.
+# roots. Build/module caches, our own state and HARVEST_EXCLUDE are pruned.
 find_repos() {
-  local r
+  local r x; local -a ex=()
+  set -f; for x in $HARVEST_EXCLUDE; do ex+=(-o -path "$x"); done; set +f
   for r in $HARVEST_ROOTS; do
     [ -d "$r" ] || continue
     find "$r" -maxdepth "$HARVEST_MAX_DEPTH" \
       \( -name '*gocache*' -o -name gomodcache -o -name .cache -o -name node_modules \
-         -o -path '*/pkg/mod' -o -path "$HARVEST_STATE" \) -prune \
+         -o -path '*/pkg/mod' -o -path "$HARVEST_STATE" ${ex[@]+"${ex[@]}"} \) -prune \
       -o -name .git -print -prune 2>/dev/null
   done | while IFS= read -r g; do dirname "$g"; done | sort -u
 }
@@ -98,6 +105,16 @@ bundle_rel() {
 }
 
 known() { [ -d "$SPOOL/$1" ] || [ -d "$ARCHIVE/$1" ]; }
+
+# new_candidates -> "rel|path" per input not yet spooled/archived, one per rel
+# (the same input in two checkouts — e.g. a replay copy — is one bundle)
+new_candidates() {
+  local in rel
+  all_inputs | while IFS= read -r in; do
+    [ -f "$in" ] || continue
+    rel=$(bundle_rel "$in"); known "$rel" || printf '%s|%s\n' "$rel" "$in"
+  done | sort -t'|' -k1,1 -u
+}
 
 # logs_naming <Fn> <file> -> up to HARVEST_MAX_LOGS *.log files that mention the input
 logs_naming() {
@@ -143,18 +160,24 @@ spool_one() { # <input> <rel>
 }
 
 scan_and_spool() { # -> number of new bundles on stdout (last line)
-  local in rel new=0 names=""
-  while IFS= read -r in; do
-    [ -f "$in" ] || continue
-    rel=$(bundle_rel "$in")
-    known "$rel" && continue
+  local cand nc rel in new=0 names=""
+  cand=$(new_candidates); nc=$(count_lines "$cand")
+  if [ "$nc" -gt "$HARVEST_MAX_NEW" ]; then
+    { echo "count=$nc"; echo "at=$(date -u +%FT%TZ)"; printf '%s\n' "$cand" | head -5; } > "$REFUSED"
+    hlog "REFUSED: $nc new inputs in one scan (> HARVEST_MAX_NEW=$HARVEST_MAX_NEW) — a corpus copied into testdata? add its dir to HARVEST_EXCLUDE" >&2
+    notify "fuzz-harvest $HARVEST_HOST: REFUSED $nc new inputs (> $HARVEST_MAX_NEW) - check HARVEST_EXCLUDE"
+    echo 0; return
+  fi
+  rm -f "$REFUSED"
+  while IFS='|' read -r rel in; do
+    [ -n "$rel" ] || continue
     if spool_one "$in" "$rel"; then
       new=$((new+1)); names="$names $(basename "$(dirname "$in")")"
       hlog "spooled $rel  (from $in)" >&2
     else
       hlog "SPOOL FAILED for $in" >&2
     fi
-  done < <(all_inputs)
+  done <<< "$cand"
   if [ "$new" -gt 0 ]; then notify "fuzz-harvest $HARVEST_HOST: $new new failing input(s):$names"; fi
   echo "$new"
 }
@@ -177,7 +200,7 @@ corpus_checkout() { # -> path of a shallow, sparse (crashers/ only) clone
 push_spool() {
   local list n wd a rel
   list=$(pending); [ -n "$list" ] || return 0
-  n=$(printf '%s\n' "$list" | wc -l | tr -d ' ')
+  n=$(count_lines "$list")
   wd=$(corpus_checkout) || { hlog "push: clone of $CORPUS_REPO failed — $n bundle(s) stay spooled"; return 1; }
   for a in 1 2 3 4 5; do
     if ! { git -C "$wd" fetch -q --depth 1 origin "$CORPUS_BRANCH" 2>/dev/null \
@@ -217,18 +240,23 @@ tick() {
 }
 
 check() {
-  local now rc=0 last in rel ep age lp
+  local now rc=0 last rel ep age lp un nu
   now=$(date +%s)
   last=$(sed -n 's/^last_scan_epoch=//p' "$STATUS" 2>/dev/null)
   if [ -z "$last" ]; then echo "ALERT $HARVEST_HOST: harvester has never completed a scan"; rc=2
   elif [ $(( (now - last) / 60 )) -ge "$HARVEST_STALE_MIN" ]; then
     echo "ALERT $HARVEST_HOST: last harvest scan $(( (now - last) / 60 ))m ago — harvester not running?"; rc=2
   fi
-  while IFS= read -r in; do
-    [ -f "$in" ] || continue
-    rel=$(bundle_rel "$in"); known "$rel" && continue
-    echo "ALERT $HARVEST_HOST: failing input not harvested: $in"; rc=2
-  done < <(all_inputs)
+  if [ -f "$REFUSED" ]; then
+    echo "ALERT $HARVEST_HOST: last scan REFUSED $(sed -n 's/^count=//p' "$REFUSED") new inputs (> HARVEST_MAX_NEW=$HARVEST_MAX_NEW) — a corpus copied into testdata? extend HARVEST_EXCLUDE"; rc=2
+  else
+    un=$(new_candidates | cut -d'|' -f2); nu=$(count_lines "$un")
+    if [ "$nu" -gt 0 ]; then
+      printf '%s\n' "$un" | head -20 | sed "s|^|ALERT $HARVEST_HOST: failing input not harvested: |"
+      if [ "$nu" -gt 20 ]; then echo "ALERT $HARVEST_HOST: ... $nu unharvested in total"; fi
+      rc=2
+    fi
+  fi
   while IFS= read -r rel; do
     [ -n "$rel" ] || continue
     ep=$(sed -n 's/^spooled_epoch=//p' "$SPOOL/$rel/meta.txt" 2>/dev/null); ep=${ep:-0}
@@ -243,19 +271,17 @@ check() {
 }
 
 dry_run() {
-  local in rel
-  while IFS= read -r in; do
-    [ -f "$in" ] || continue
-    rel=$(bundle_rel "$in")
-    if known "$rel"; then echo "known  $rel"; else echo "NEW    $rel  <- $in"; fi
-  done < <(all_inputs)
+  local cand rel in
+  cand=$(new_candidates)
+  while IFS='|' read -r rel in; do [ -n "$rel" ] && echo "NEW    $rel  <- $in"; done <<< "$cand"
+  echo "-- $(count_lines "$cand") new input(s); HARVEST_MAX_NEW=$HARVEST_MAX_NEW; HARVEST_EXCLUDE=$HARVEST_EXCLUDE"
 }
 
 install_cron() {
   local self line
   self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
   mkdir -p "$HARVEST_STATE"
-  line="*/5 * * * * HARVEST_ROOTS='$HARVEST_ROOTS' CORPUS_REPO='$CORPUS_REPO' $self >> $HARVEST_STATE/harvest.log 2>&1 # fuzz-harvest"
+  line="*/5 * * * * HARVEST_ROOTS='$HARVEST_ROOTS' HARVEST_EXCLUDE='$HARVEST_EXCLUDE' CORPUS_REPO='$CORPUS_REPO' $self >> $HARVEST_STATE/harvest.log 2>&1 # fuzz-harvest"
   { crontab -l 2>/dev/null | grep -v '# fuzz-harvest$'; echo "$line"; } | crontab - && echo "installed: $line"
 }
 
