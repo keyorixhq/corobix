@@ -79,6 +79,36 @@ EOF
   grep -qF "$(printf 'fixture/pkgA\tfixture_pkgA\t')" "$PREBUILT_DIR/sha1/manifest.tsv"
 }
 
+@test "regression guard: prebuilt binaries are coverage-instrumented, not just warning-free" {
+  # This is the real regression risk in prebuilt_build, not a hypothetical:
+  # plain `go test -c` (no -fuzz at build time) compiles and runs fine but
+  # silently drops fuzzing's coverage-guidance instrumentation -- go test only
+  # sets cmd/go's internal FuzzInstrument (-> the -d=libfuzzer compiler flag)
+  # when `-fuzz` is non-empty at BUILD time (cmd/go/internal/test/test.go:
+  # `if testFuzz != ""`). A future edit that drops the `-fuzz='^Fuzz$'` flag
+  # from the `go test -c` line would build successfully, pass every OTHER
+  # test in this file, and silently turn every rig into dumb/random fuzzing.
+  # Checked directly against Go's own source for the exact signal
+  # (internal/fuzz/fuzz.go): `covSize := len(coverage()); if covSize == 0 {
+  # print the warning below }` -- so the warning's ABSENCE, and the
+  # "gathering baseline coverage" (vs uninstrumented's "testing seed corpus")
+  # wording, are the ground-truth signal, not a proxy for one.
+  run prebuilt_build "cov-check"
+  [ "$status" -eq 0 ]
+  run "$PREBUILT_DIR/cov-check/fixture_pkgA.test" \
+    -test.run='^$' -test.fuzz='^FuzzAdd$' -test.parallel=1 -test.fuzztime=1s \
+    -test.fuzzcachedir="${BATS_TEST_TMPDIR}/covcheck-cachedir"
+  [ "$status" -eq 0 ]
+  # A SINGLE compound [[ ]] on purpose: two separate `[[ ]]` statements here
+  # would silently swallow a failure of the FIRST one -- bats only fails a
+  # test on the LAST command's exit status, not on every intermediate one,
+  # and this test's whole point is to fail loudly the moment either signal
+  # regresses. (Caught this the hard way: an earlier two-statement version of
+  # this exact test stayed "ok" against a deliberately re-broken
+  # fuzz-runner.sh where the -fuzz build flag was removed.)
+  [[ "$output" == *"gathering baseline coverage"* && "$output" != *"not built with coverage instrumentation"* ]]
+}
+
 @test "prebuilt_ensure: bootstrap build failure falls back to classic discovery, never crashes" {
   add_broken_pkgB
   FUZZ_PREBUILT=1
