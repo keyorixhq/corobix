@@ -1,0 +1,17 @@
+# Allowlist for intentional shared-module version divergence, checked by
+# scripts/check-shared-pins.sh. Tab-separated, 4 columns, no header row read
+# by the script (this comment block is skipped — lines starting with '#').
+# An entry only matches its EXACT (module, harness_version) pair, so bumping
+# the harness pin without updating this file re-triggers the check on
+# purpose. An entry whose review_date has passed fails the check even if the
+# module/version still match — a stale "yes this is fine" is exactly the
+# kind of drift this script exists to catch.
+#
+# module	harness_version	reason	review_date (YYYY-MM-DD)
+github.com/beevik/etree	v1.5.0	targets/libs (pve rig D) not yet rebased; follow-up branch	2026-10-06
+github.com/go-webauthn/webauthn	v0.18.0	targets/libs (pve rig D) not yet rebased; follow-up branch	2026-10-06
+github.com/go-webauthn/x	v0.3.0	targets/libs (pve rig D) not yet rebased; follow-up branch	2026-10-06
+github.com/jonboulle/clockwork	v0.2.2	targets/libs (pve rig D) not yet rebased; follow-up branch	2026-10-06
+github.com/russellhaering/goxmldsig	v1.4.0	targets/libs (pve rig D) not yet rebased; follow-up branch	2026-10-06
+golang.org/x/crypto	v0.55.0	targets/libs (pve rig D) not yet rebased; follow-up branch	2026-10-06
+golang.org/x/sys	v0.47.0	targets/libs (pve rig D) not yet rebased; follow-up branch	2026-10-06
