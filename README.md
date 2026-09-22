@@ -115,6 +115,8 @@ All keys are set in `fuzz.conf`. Only `MODULE_DIR` is required.
 | `STATE_DIR` / `LOG_DIR` / `FINDINGS_DIR` | `$MODULE_DIR-{state,logs,findings}` | Working dirs. |
 | `NOTIFY_URL` | — | Optional; `curl -d <msg>` fired on crash. |
 | `FETCH_RETRIES` / `FETCH_BACKOFF` | `5` / `10` | git-mode fetch retry/backoff (linear). |
+| `FUZZ_PREBUILT` | `0` | `1` builds each fuzz-target package's test binary once per commit (`go test -c -fuzz='^Fuzz$'`, for the coverage instrumentation fuzzing needs — see fuzz-runner.sh's own comment above `discover()`) instead of recompiling on every slice and every rotation lap. Default off = today's unchanged per-slice `go test` behavior. |
+| `PREBUILT_DIR` | `$MODULE_DIR-prebuilt` | Where prebuilt generations live, keyed by commit SHA (or a content hash outside git). Keeps the 2 most recent. MUST stay outside `$(go env GOCACHE)` — Go's own build-cache trimming can evict files under GOCACHE. |
 
 See `examples/` for `standalone`+`private` (libs), and `git`+`private`(+overrides)
 for dashdiag / keyorix.
