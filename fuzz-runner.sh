@@ -125,6 +125,201 @@ discover() {    # emit "pkg|Func"; drift-proof (same go test -list CI uses)
   done < <(go list ./... 2>/dev/null)
 }
 
+# --- FUZZ_PREBUILT mode (opt-in via fuzz.conf; default off = unchanged behavior) ---
+#
+# Line ~413's `go test "$pkg" ... -fuzz=...` recompiles the package's test binary
+# on EVERY slice, and discover()'s `go test -list` recompiles again every
+# rotation lap — both pay a full build per invocation. FUZZ_PREBUILT=1 builds
+# each fuzz-target package's test binary ONCE per commit (`go test -c`), lists
+# its targets ONCE from that binary (`<pkg>.test -test.list='^Fuzz'`), and then
+# execs that same binary directly for every slice with the identical -test.*
+# flags `go test` itself passes — captured for real via `go test -x` against a
+# real target (see the Part 2 report for the exact trace):
+#   -test.paniconexit0
+#   -test.fuzzcachedir=$(go env GOCACHE)/fuzz/<full import path>
+#   -test.timeout=10m0s   (go test's own built-in default; empirically
+#                          INDEPENDENT of -fuzztime — verified unchanged with
+#                          -fuzztime up to 1h30m, because fuzz mode's watchdog
+#                          is per-input, not per-invocation)
+#   -test.run / -test.fuzz / -test.parallel / -test.fuzztime  (from go test's
+#                          own -run/-fuzz/-parallel/-fuzztime)
+# Working directory is the package's own source dir (matching go test, which
+# cd's there before running) so testdata/fuzz seeds and crasher writes land in
+# exactly the same place either mode is used. $GOFLAGS propagates to `go test
+# -c` for free via normal environment inheritance — nothing extra to pass.
+#
+# A build failure on a new commit is logged and NEVER promoted: the rig keeps
+# fuzzing (and listing from) the last successfully-built generation and retries
+# on the next sync. If no generation has EVER built successfully, discovery and
+# execution fall back to the classic go-test path for that cycle — this never
+# exits or crash-loops the service over a bad commit.
+
+PREBUILT_ACTIVE_SHA=""   # key of the currently-usable prebuilt generation, or "" if none yet
+
+# prebuilt_dir -> the dedicated binaries root. MUST live outside $(go env
+# GOCACHE): Go's own build-cache trimming can evict files under GOCACHE, and a
+# prebuilt .test binary disappearing out from under a running rig is exactly
+# the failure mode this exists to avoid.
+prebuilt_dir() { echo "${PREBUILT_DIR:-${MODULE_DIR}-prebuilt}"; }
+
+# prebuilt_key -> a string that changes exactly when the source does. git SHA
+# when MODULE_DIR is a git checkout (every git-mode rig, and most standalone
+# ones); otherwise a content hash of go.mod+go.sum+every .go file's bytes
+# (portable — no stat(1)/find -printf format differences between BSD and GNU).
+prebuilt_key() {
+  local sha
+  sha="$(git -C "$MODULE_DIR" rev-parse HEAD 2>/dev/null)"
+  if [ -n "$sha" ]; then echo "$sha"; return; fi
+  find "$MODULE_DIR" -name '*.go' -print0 2>/dev/null | sort -z | xargs -0 cat 2>/dev/null |
+    cat "$MODULE_DIR/go.mod" "$MODULE_DIR/go.sum" - 2>/dev/null | sha256sum | cut -d' ' -f1
+}
+
+# prebuilt_slug <pkg> -> filesystem-safe name for a package's binary/list files.
+prebuilt_slug() { printf '%s' "$1" | tr '/' '_'; }
+
+# prebuilt_build <sha> -> builds every fuzz-target package's test binary + its
+# authoritative target list into a STAGING dir, then atomically renames it into
+# place only on FULL success. On any package's build/list failure it removes
+# the staging dir and returns nonzero — a partial generation is never promoted.
+prebuilt_build() {
+  local sha="$1" root staging pkg dir slug bin ok=1 tf
+  root="$(prebuilt_dir)"; staging="$root/.building-$sha"
+  rm -rf "$staging"; mkdir -p "$staging"
+  : > "$staging/manifest.tsv"
+  while IFS='|' read -r dir pkg; do
+    [ -n "$pkg" ] || continue
+    shopt -s nullglob; tf=("$dir"/*_test.go); shopt -u nullglob
+    [ "${#tf[@]}" -gt 0 ] || continue
+    grep -qE '^func Fuzz[A-Za-z0-9_]*\(' "${tf[@]}" 2>/dev/null || continue
+    slug="$(prebuilt_slug "$pkg")"; bin="$staging/$slug.test"
+    # -fuzz='^Fuzz$' at BUILD time is required, not cosmetic: `go test` only sets
+    # cmd/go's internal FuzzInstrument (-> -d=libfuzzer, the coverage-counter
+    # instrumentation the fuzzing engine's mutation guidance depends on) when
+    # -fuzz is non-empty (cmd/go/internal/test/test.go: `if testFuzz != ""`).
+    # `go test -c` alone builds a binary that runs -fuzz uninstrumented — proven
+    # empirically: it prints "warning: ... not built with coverage
+    # instrumentation ... fuzzing will run without coverage guidance" and does
+    # dumb/random fuzzing (no corpus growth at all in a real run). The pattern
+    # here never needs to match anything real — -c never executes a fuzz
+    # session, it only flips this one build-time switch for the whole package.
+    if ! go test -c -fuzz='^Fuzz$' -o "$bin" "$pkg" >>"$LOG_DIR/prebuilt-build.log" 2>&1; then
+      log "prebuilt: BUILD FAILED for $pkg (sha=$sha) — see $LOG_DIR/prebuilt-build.log"
+      ok=0; break
+    fi
+    if ! "$bin" -test.list='^Fuzz' >"$staging/$slug.targets" 2>>"$LOG_DIR/prebuilt-build.log"; then
+      log "prebuilt: -test.list FAILED for $pkg (sha=$sha)"
+      ok=0; break
+    fi
+    printf '%s\t%s\t%s\n' "$pkg" "$slug" "$dir" >>"$staging/manifest.tsv"
+  done < <(go list -f '{{.Dir}}|{{.ImportPath}}' ./... 2>/dev/null)
+
+  if [ "$ok" -eq 1 ] && [ -s "$staging/manifest.tsv" ]; then
+    touch "$staging/.ok"
+    rm -rf "${root:?}/${sha:?}"
+    mv "$staging" "$root/$sha"
+    return 0
+  fi
+  log "prebuilt: build for sha=$sha did not complete cleanly — discarding staging dir"
+  rm -rf "$staging"
+  return 1
+}
+
+# prebuilt_prune -> keep only the current generation + the most recently-built
+# other one. Directory mtimes are set once at `mv`-into-place time (a rename
+# does not touch a directory's own mtime on any POSIX filesystem this runs on),
+# so "newest by mtime" is exactly "most recently successfully built" — the
+# generation this function is called right after building is always #1.
+prebuilt_prune() {
+  local root old; root="$(prebuilt_dir)"
+  [ -d "$root" ] || return 0
+  find "$root" -maxdepth 1 -mindepth 1 -type d -name '.building-*' -exec rm -rf {} + 2>/dev/null
+  # shellcheck disable=SC2012  # a handful of sibling dirs, no adversarial names expected
+  while IFS= read -r old; do
+    [ -n "$old" ] && rm -rf "${root:?}/${old:?}"
+  done < <(ls -1t "$root" 2>/dev/null | tail -n +3)
+}
+
+# prebuilt_ensure -> makes PREBUILT_ACTIVE_SHA name a generation with a valid
+# .ok marker for the CURRENT source. Cheap (no build) when nothing changed.
+prebuilt_ensure() {
+  local sha root; sha="$(prebuilt_key)"; root="$(prebuilt_dir)"
+  if [ -f "$root/$sha/.ok" ]; then
+    PREBUILT_ACTIVE_SHA="$sha"
+    return 0
+  fi
+  log "prebuilt: building generation for sha=$sha"
+  if prebuilt_build "$sha"; then
+    PREBUILT_ACTIVE_SHA="$sha"
+    prebuilt_prune
+    return 0
+  fi
+  if [ -n "$PREBUILT_ACTIVE_SHA" ]; then
+    log "prebuilt: keeping previous generation sha=$PREBUILT_ACTIVE_SHA — will retry sha=$sha next sync"
+  else
+    log "prebuilt: no generation has ever built successfully — falling back to go test for this cycle"
+  fi
+  return 1
+}
+
+# prebuilt_list_targets -> "pkg|Func" lines from PREBUILT_ACTIVE_SHA's manifest.
+prebuilt_list_targets() {
+  local root pkg slug dir fn
+  root="$(prebuilt_dir)/$PREBUILT_ACTIVE_SHA"
+  [ -f "$root/manifest.tsv" ] || return 0
+  while IFS=$'\t' read -r pkg slug dir; do
+    [ -n "$pkg" ] || continue
+    while IFS= read -r fn; do
+      [ -n "$fn" ] && printf '%s|%s\n' "$pkg" "$fn"
+    done < "$root/$slug.targets"
+  done < "$root/manifest.tsv"
+}
+
+# prebuilt_pkg_info <pkg> -> "slug<TAB>dir" from PREBUILT_ACTIVE_SHA's manifest,
+# or empty if <pkg> isn't in it.
+prebuilt_pkg_info() {
+  awk -F'\t' -v p="$1" '$1==p {print $2"\t"$3; exit}' "$(prebuilt_dir)/$PREBUILT_ACTIVE_SHA/manifest.tsv" 2>/dev/null
+}
+
+# discover_targets -> discover() itself when FUZZ_PREBUILT is off (the
+# unchanged default); otherwise ensure a prebuilt generation is current and
+# list from it, falling back to discover() for one cycle if no generation has
+# ever built successfully.
+discover_targets() {
+  if [ "${FUZZ_PREBUILT:-0}" = 1 ]; then
+    if prebuilt_ensure; then
+      prebuilt_list_targets
+      return
+    fi
+  fi
+  discover
+}
+
+# run_slice <pkg> <fn> <dur> -> exactly today's `go test ... -fuzz=...`
+# invocation unless FUZZ_PREBUILT=1 has a usable generation covering <pkg>, in
+# which case it execs that generation's prebuilt binary directly with the
+# identical -test.* flags (see the header comment above discover()'s
+# FUZZ_PREBUILT section) — same corpus cache dir, same crasher path.
+run_slice() {
+  local pkg="$1" fn="$2" dur="$3" info slug dir gocache
+  if [ "${FUZZ_PREBUILT:-0}" = 1 ] && [ -n "$PREBUILT_ACTIVE_SHA" ]; then
+    info="$(prebuilt_pkg_info "$pkg")"
+    if [ -n "$info" ]; then
+      slug="${info%%$'\t'*}"; dir="${info#*$'\t'}"
+      gocache="$(go env GOCACHE)"
+      ( cd "$dir" && exec "$(prebuilt_dir)/$PREBUILT_ACTIVE_SHA/$slug.test" \
+          -test.paniconexit0 \
+          -test.fuzzcachedir="$gocache/fuzz/$pkg" \
+          -test.timeout=10m0s \
+          -test.run='^$' \
+          -test.fuzz="^${fn}\$" \
+          -test.parallel="$PARALLEL" \
+          -test.fuzztime="$dur" )
+      return $?
+    fi
+  fi
+  go test "$pkg" -run='^$' -fuzz="^${fn}\$" -parallel="$PARALLEL" -fuzztime="$dur"
+}
+
 # filter_targets: drop any "pkg|Func" whose Func is listed in $EXCLUDE
 # (space-separated Fuzz func names) — e.g. a saturated target on a pinned lib.
 filter_targets() {
@@ -361,6 +556,10 @@ main() {
   # Re-verify a reproducer before alerting/pushing (on = suppress transient worker
   # deaths that don't actually reproduce; see reproducer_reverifies).
   : "${REVERIFY_CRASH:=on}"; : "${REVERIFY_RUNS:=1}"; : "${REVERIFY_TIMEOUT:=2m}"
+  # Prebuilt-test-binary mode (off by default — see the FUZZ_PREBUILT section
+  # above discover()). PREBUILT_DIR defaults to a sibling of MODULE_DIR, same
+  # convention as STATE_DIR/LOG_DIR/FINDINGS_DIR, and MUST stay outside GOCACHE.
+  : "${FUZZ_PREBUILT:=0}"; : "${PREBUILT_DIR:=$MODULE_DIR-prebuilt}"
   [ -n "${CRASH_MODE:-}" ] && echo "fuzz-runner: CRASH_MODE is deprecated — rename it to REPORT_MODE in fuzz.conf (honored for now)" >&2
   local eff; eff="$(effective_report_mode)"
   [ "$eff" = "${REPORT_MODE}" ] || echo "fuzz-runner: report mode $REPORT_MODE -> $eff for standalone module (disclosure safety)" >&2
@@ -384,7 +583,7 @@ main() {
   fi
 
   [ "$SOURCE_MODE" = "git" ] && sync_main
-  mapfile -t TARGETS < <(discover | sort | filter_targets)
+  mapfile -t TARGETS < <(discover_targets | sort | filter_targets)
   [ "${#TARGETS[@]}" -gt 0 ] || { log "no fuzz targets discovered under $MODULE_DIR"; exit 1; }
   log "discovered ${#TARGETS[@]} target(s); mode=$SOURCE_MODE/$REPORT_MODE default=$DEFAULT_FUZZTIME corpus_sync=$CORPUS_SYNC"
 
@@ -400,7 +599,7 @@ main() {
       [ "$SOURCE_MODE" = "git" ] && sync_main
       sync_corpus
       saturation_report
-      mapfile -t NEW < <(discover | sort | filter_targets)
+      mapfile -t NEW < <(discover_targets | sort | filter_targets)
       if [ "${#NEW[@]}" -gt 0 ] && [ "${NEW[*]}" != "${TARGETS[*]}" ]; then
         log "target set changed (${#TARGETS[@]} -> ${#NEW[@]}) — reloading"; exec "$0" "$@"
       fi
@@ -410,7 +609,7 @@ main() {
     entry="${TARGETS[$i]}"; pkg="${entry%%|*}"; fn="${entry##*|}"; dur="$(resolve_duration "$fn")"
     echo "$(( (i+1) % ${#TARGETS[@]} ))" > "$POS_FILE"
     log "=== fuzzing $fn ($pkg) for $dur ==="
-    go test "$pkg" -run='^$' -fuzz="^${fn}\$" -parallel="$PARALLEL" -fuzztime="$dur" >>"$LOG_DIR/${fn}.log" 2>&1
+    run_slice "$pkg" "$fn" "$dur" >>"$LOG_DIR/${fn}.log" 2>&1
     rc=$?
     d="$(find . -type d -path "*/testdata/fuzz/$fn" 2>/dev/null | head -1)"
     if [ -n "$d" ] && [ -n "$(ls -A "$d" 2>/dev/null)" ]; then
