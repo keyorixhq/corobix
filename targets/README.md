@@ -12,7 +12,7 @@ beside the code they exercise — they can't live here (internal packages).
 | module | rig / service | targets |
 |---|---|---|
 | `libs/` (`keyorix-libs-fuzz`) | pve01 · `libsfuzz.service` | go-webauthn credential + `x/encoding/asn1`, golang-jwt id_token parse, crewjam/saml `ParseXMLResponse`, beevik/etree |
-| `libs-extra/` (`keyorix-libs-extra-fuzz`) | vcd-dashdiag · `libs-extra-fuzz.service` | crewjam/saml `xmlenc`, mattermost `xml-roundtrip-validator`, digitorus/timestamp, JWT signature-bypass rejection template |
+| `libs-extra/` (`keyorix-libs-extra-fuzz`) | vcd-dashdiag · `libs-extra-fuzz.service` | crewjam/saml `xmlenc`, mattermost `xml-roundtrip-validator`, digitorus/timestamp, JWT signature-bypass rejection template, russellhaering/goxmldsig reference-binding bypass invariant (CVE-2026-33487 property, see the target's own doc comment) |
 
 ## Detection layers per target
 - panics / crashes — native `go test -fuzz`
