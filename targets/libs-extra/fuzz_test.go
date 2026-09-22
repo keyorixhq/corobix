@@ -84,8 +84,11 @@ func FuzzXMLRoundtripValidate(f *testing.F) {
 	})
 }
 
-// FuzzTimestampParseResponse — crash + deadline. EXCLUDEd in fuzz.conf pending the
-// upstream digitorus/pkcs7 ber.go panic fix; kept intact for when it is re-enabled.
+// FuzzTimestampParseResponse — crash + deadline. Was EXCLUDEd on the (now-
+// decommissioned) rig's box-local fuzz.conf pending an upstream digitorus/pkcs7
+// ber.go OOB-panic fix. Verified 2026-09-22: the panic reproduces on the old
+// pin but not on the pin this module now carries (matches what keyorix
+// ships) -- re-enabled, no EXCLUDE in examples/libs-extra.conf.
 func FuzzTimestampParseResponse(f *testing.F) {
 	f.Add([]byte{0x30, 0x03, 0x02, 0x01, 0x00})
 	f.Fuzz(func(t *testing.T, data []byte) {
