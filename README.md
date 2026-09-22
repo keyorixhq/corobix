@@ -13,6 +13,8 @@ new script. See the design rationale and the "when to reach for something
 heavier" triggers in the Keyorix project doc
 `claude/2026-09-13-fuzzing-tooling-decisions.md`.
 
+Fuzzing catches ledger (finds, lessons, disclosure history): `keyorixhq/fuzz-corpus` `docs/fuzzing-catches-ledger.md`.
+
 ## Why native `go test -fuzz`
 
 For pure-Go / CGO-free code the libFuzzer sanitizer advantage (ASan/MSan/UBSan)
