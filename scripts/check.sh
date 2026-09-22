@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 echo "== shellcheck =="
-shellcheck fuzz-runner.sh harvest-crashers.sh scripts/require-deadline.sh
+shellcheck fuzz-runner.sh harvest-crashers.sh scripts/require-deadline.sh scripts/check-shared-pins.sh
 
 echo "== bats =="
 bats tests/
@@ -20,5 +20,8 @@ done
 
 echo "== require-deadline lint (per-input deadline on every target) =="
 scripts/require-deadline.sh
+
+echo "== shared-module pin drift (targets/*/go.mod vs keyorix main) =="
+scripts/check-shared-pins.sh
 
 echo "OK - all local checks passed"

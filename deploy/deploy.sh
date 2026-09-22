@@ -61,7 +61,28 @@ deploy_one() {
   IFS='|' read -r host dir conf <<<"$spec"
   echo "==> $rig ($host:$dir)"
 
+  ssh "$host" mkdir -p "$dir" || die "[$rig] mkdir $dir failed"
+
+  # Seed fuzz.conf from the checked-in template when the rig has none yet. Never
+  # overwrites an existing one -- fuzz.conf is box-local/gitignored by design
+  # (targets/README.md), so nothing else ever creates it, and a config fix (e.g.
+  # lifting an EXCLUDE) only reaches a rig this way on first deploy or a rebuild.
+  # shellcheck disable=SC2029  # intentional: $conf is THIS script's known value,
+  # not something the remote shell should resolve independently.
+  if ! ssh "$host" "[ -f '$conf' ]"; then
+    [ -f "examples/$rig.conf" ] || die "[$rig] rig has no fuzz.conf and there is no examples/$rig.conf to seed it from"
+    scp -q "examples/$rig.conf" "$host:$conf" || die "[$rig] scp fuzz.conf template failed"
+    echo "    seeded $conf from examples/$rig.conf (rig had none)"
+  fi
+
   scp -q fuzz-runner.sh "$host:$dir/.fuzz-runner.sh.new" || die "[$rig] scp failed"
+
+  # Advisory-only helper the runner shells out to at startup if present (see
+  # fuzz-runner.sh's drift-guard call) — not sha-verified like the runner itself,
+  # since a stale/missing copy only means one warning line is skipped, never a
+  # wrong fuzz result.
+  ssh "$host" mkdir -p "$dir/scripts" || die "[$rig] mkdir scripts failed"
+  scp -q scripts/check-shared-pins.sh scripts/pin-drift-allowlist.tsv "$host:$dir/scripts/" || die "[$rig] scp drift-guard failed"
 
   # Quoted heredoc: NO local expansion. All values are passed as positional args
   # (each a single space-free token: paths, hex shas, a tag, user@host, an ISO ts),

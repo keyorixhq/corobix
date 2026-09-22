@@ -369,6 +369,20 @@ main() {
   CONF_HASH="$(sha256sum "$CONF" | cut -d' ' -f1)"
   cd "$MODULE_DIR" || { echo "fuzz-runner: MODULE_DIR not found: $MODULE_DIR" >&2; exit 1; }
 
+  # Shared-module pin drift, warning-only: a target module fuzzing a version of a
+  # library keyorix no longer ships (or ships a different version of) is silent
+  # otherwise — this is what missed digitorus/pkcs7 drifting ~3 years stale.
+  # check-shared-pins.sh only ships to rigs that deploy/deploy.sh has copied it to
+  # (deploy.sh scps scripts/check-shared-pins.sh + scripts/pin-drift-allowlist.tsv
+  # alongside the runner) — a rig without it just logs that once and moves on;
+  # this is advisory, never a reason to refuse to fuzz.
+  if [ -x "$SCRIPT_DIR/scripts/check-shared-pins.sh" ]; then
+    "$SCRIPT_DIR/scripts/check-shared-pins.sh" --warn-only "$MODULE_DIR" 2>&1 |
+      while IFS= read -r drift_line; do log "drift-guard: $drift_line"; done
+  else
+    log "drift-guard: scripts/check-shared-pins.sh not deployed here — skipping (advisory only)"
+  fi
+
   [ "$SOURCE_MODE" = "git" ] && sync_main
   mapfile -t TARGETS < <(discover | sort | filter_targets)
   [ "${#TARGETS[@]}" -gt 0 ] || { log "no fuzz targets discovered under $MODULE_DIR"; exit 1; }
