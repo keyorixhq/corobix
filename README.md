@@ -117,6 +117,9 @@ All keys are set in `fuzz.conf`. Only `MODULE_DIR` is required.
 | `FETCH_RETRIES` / `FETCH_BACKOFF` | `5` / `10` | git-mode fetch retry/backoff (linear). |
 | `FUZZ_PREBUILT` | `0` | `1` builds each fuzz-target package's test binary once per commit (`go test -c -fuzz='^Fuzz$'`, for the coverage instrumentation fuzzing needs — see fuzz-runner.sh's own comment above `discover()`) instead of recompiling on every slice and every rotation lap. Default off = today's unchanged per-slice `go test` behavior. |
 | `PREBUILT_DIR` | `$MODULE_DIR-prebuilt` | Where prebuilt generations live, keyed by commit SHA (or a content hash outside git). Keeps the 2 most recent. MUST stay outside `$(go env GOCACHE)` — Go's own build-cache trimming can evict files under GOCACHE. |
+| `MINIMIZE_CAP` | `off` | `on` passes `-fuzzminimizetime=$MINIMIZE_CAP_VALUE` (prebuilt: `-test.fuzzminimizetime`) to targets whose package's coverage map exceeds `MINIMIZE_CAP_THRESHOLD` bytes. The size is measured, never configured: the distance between `internal/fuzz._counters` and `._ecounters` in the instrumented test binary, recorded per prebuilt generation (`mapsizes.tsv`) or measured once per commit and package and cached in `$STATE_DIR/mapsize/`. Unknown size = Go's default, logged. Why: on 250-480 KB maps Go's 60s default minimization stalled keyorix targets 19-67% of wall time; 100x removed it on pure targets (30% left on the stateful HTTP sequence) with identical coverage. Evidence: Keyorix project doc `claude/2026-09-23-coverage-map-leaf-package-ab-results.md`. |
+| `MINIMIZE_CAP_VALUE` | `100x` | Any `-fuzzminimizetime` value (`100x` = attempts, `10s` = time, `0` = off). |
+| `MINIMIZE_CAP_THRESHOLD` | `100000` | Map bytes above which the cap applies (strictly greater). A package with few imports is ~5 KB. |
 
 See `examples/` for `standalone`+`private` (libs), and `git`+`private`(+overrides)
 for dashdiag / keyorix.

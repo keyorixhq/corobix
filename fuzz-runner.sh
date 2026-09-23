@@ -182,7 +182,7 @@ prebuilt_slug() { printf '%s' "$1" | tr '/' '_'; }
 # place only on FULL success. On any package's build/list failure it removes
 # the staging dir and returns nonzero — a partial generation is never promoted.
 prebuilt_build() {
-  local sha="$1" root staging pkg dir slug bin ok=1 tf
+  local sha="$1" root staging pkg dir slug bin ok=1 tf mb
   root="$(prebuilt_dir)"; staging="$root/.building-$sha"
   rm -rf "$staging"; mkdir -p "$staging"
   : > "$staging/manifest.tsv"
@@ -211,6 +211,11 @@ prebuilt_build() {
       ok=0; break
     fi
     printf '%s\t%s\t%s\n' "$pkg" "$slug" "$dir" >>"$staging/manifest.tsv"
+    # Coverage-map size for the minimize-time cap (see minimize_cap_for). The
+    # binary is already instrumented, so this is one nm pass; a miss just means
+    # "unknown" and never fails the generation.
+    mb="$(mapsize_of_bin "$bin")"
+    [ -n "$mb" ] && printf '%s\t%s\n' "$pkg" "$mb" >>"$staging/mapsizes.tsv"
   done < <(go list -f '{{.Dir}}|{{.ImportPath}}' ./... 2>/dev/null)
 
   if [ "$ok" -eq 1 ] && [ -s "$staging/manifest.tsv" ]; then
@@ -294,18 +299,96 @@ discover_targets() {
   discover
 }
 
+# --- Minimize-time cap for heavy coverage maps (opt-in via MINIMIZE_CAP=on) ---
+#
+# Go's fuzz engine minimizes every new interesting input for up to 60s by
+# default, and each minimization step re-scans the WHOLE coverage-counter map.
+# A package that transitively imports a lot (keyorix internal/core, server/http,
+# ...) has a 250-480 KB map, and on those packages minimization measurably
+# stalls the run: 19% and 51% of wall time on two pure internal/core targets,
+# 67% on the stateful HTTP sequence fuzzer. Capping it at MINIMIZE_CAP_VALUE
+# (default 100x = 100 attempts) removed the stall entirely on the pure targets
+# and cut the stateful one to 30%, with byte-identical coverage under the
+# default, 100x and 0 on all three (Keyorix project doc
+# claude/2026-09-23-coverage-map-leaf-package-ab-results.md). Small-map
+# packages (csvsafe ~5 KB, netutil ~18-43 KB) showed no stall, so the cap is
+# applied only above MINIMIZE_CAP_THRESHOLD bytes of map.
+#
+# The map size is MEASURED, never hand-maintained: it is the distance between
+# the linker symbols internal/fuzz._counters and internal/fuzz._ecounters in an
+# INSTRUMENTED test binary (`go test -c -fuzz=...`; a plain -c build has none).
+# FUZZ_PREBUILT=1 records it while building each generation (mapsizes.tsv next
+# to manifest.tsv, free: the binary is already there). Otherwise it is measured
+# on first use per (source key, package), cached under $STATE_DIR/mapsize/, so
+# it tracks every commit on its own. Unknown size (build or nm failure) = no
+# cap, logged: this must never stop the rig fuzzing.
+
+# mapsize_of_bin <test-binary> -> coverage-map bytes, or nothing if the binary
+# has no fuzz counters (uninstrumented) or can't be read.
+mapsize_of_bin() {
+  local a b
+  read -r a b < <(go tool nm "$1" 2>/dev/null | awk '
+    $NF=="internal/fuzz._counters"  {a=$1}
+    $NF=="internal/fuzz._ecounters" {b=$1}
+    END {if (a!="" && b!="") print a, b}')
+  [ -n "${a:-}" ] && [ -n "${b:-}" ] || return 0
+  echo $(( 16#$b - 16#$a ))
+}
+
+# pkg_map_bytes <pkg> -> the package's coverage-map bytes, or nothing if unknown.
+pkg_map_bytes() {
+  local pkg="$1" v key slug dir tmp
+  if [ "${FUZZ_PREBUILT:-0}" = 1 ] && [ -n "$PREBUILT_ACTIVE_SHA" ]; then
+    v="$(awk -F'\t' -v p="$pkg" '$1==p {print $2; exit}' "$(prebuilt_dir)/$PREBUILT_ACTIVE_SHA/mapsizes.tsv" 2>/dev/null)"
+    [ -n "$v" ] && { echo "$v"; return 0; }
+  fi
+  key="$(prebuilt_key)"; slug="$(prebuilt_slug "$pkg")"
+  dir="$STATE_DIR/mapsize/$key"
+  if [ -f "$dir/$slug" ]; then
+    v="$(cat "$dir/$slug" 2>/dev/null)"; [ "$v" = "-" ] || echo "$v"; return 0
+  fi
+  mkdir -p "$dir"; tmp="$dir/.$slug.test.$$"
+  v=""
+  if go test -c -fuzz='^Fuzz$' -o "$tmp" "$pkg" >>"$LOG_DIR/mapsize-build.log" 2>&1; then
+    v="$(mapsize_of_bin "$tmp")"
+  fi
+  rm -f "$tmp"
+  # "-" caches an unknown result too, so a package that won't build instrumented
+  # isn't rebuilt on every slice of this commit.
+  echo "${v:--}" > "$dir/$slug"
+  # Keep only this key's cache (plus the one just written); old commits pile up otherwise.
+  find "$STATE_DIR/mapsize" -mindepth 1 -maxdepth 1 -type d ! -name "$key" -exec rm -rf {} + 2>/dev/null
+  [ -n "$v" ] && echo "$v"
+  return 0
+}
+
+# minimize_cap_for <pkg> -> the -fuzzminimizetime value to pass for <pkg>, or
+# nothing (keep Go's default). Pure decision given pkg_map_bytes.
+minimize_cap_for() {
+  [ "${MINIMIZE_CAP:-off}" = on ] || return 0
+  local bytes; bytes="$(pkg_map_bytes "$1")"
+  [[ "$bytes" =~ ^[0-9]+$ ]] || return 0
+  [ "$bytes" -gt "${MINIMIZE_CAP_THRESHOLD:-100000}" ] && echo "${MINIMIZE_CAP_VALUE:-100x}"
+  return 0
+}
+
 # run_slice <pkg> <fn> <dur> -> exactly today's `go test ... -fuzz=...`
 # invocation unless FUZZ_PREBUILT=1 has a usable generation covering <pkg>, in
 # which case it execs that generation's prebuilt binary directly with the
 # identical -test.* flags (see the header comment above discover()'s
 # FUZZ_PREBUILT section) — same corpus cache dir, same crasher path.
 run_slice() {
-  local pkg="$1" fn="$2" dur="$3" info slug dir gocache
+  local pkg="$1" fn="$2" dur="$3" info slug dir gocache mt
+  local -a extra=()
+  # Optional 4th arg: the minimize cap already resolved by the caller (main
+  # resolves it once so it can log the decision); empty = Go's default.
+  mt="${4:-}"
   if [ "${FUZZ_PREBUILT:-0}" = 1 ] && [ -n "$PREBUILT_ACTIVE_SHA" ]; then
     info="$(prebuilt_pkg_info "$pkg")"
     if [ -n "$info" ]; then
       slug="${info%%$'\t'*}"; dir="${info#*$'\t'}"
       gocache="$(go env GOCACHE)"
+      [ -n "$mt" ] && extra=(-test.fuzzminimizetime="$mt")
       ( cd "$dir" && exec "$(prebuilt_dir)/$PREBUILT_ACTIVE_SHA/$slug.test" \
           -test.paniconexit0 \
           -test.fuzzcachedir="$gocache/fuzz/$pkg" \
@@ -313,11 +396,13 @@ run_slice() {
           -test.run='^$' \
           -test.fuzz="^${fn}\$" \
           -test.parallel="$PARALLEL" \
-          -test.fuzztime="$dur" )
+          -test.fuzztime="$dur" \
+          ${extra[@]+"${extra[@]}"} )
       return $?
     fi
   fi
-  go test "$pkg" -run='^$' -fuzz="^${fn}\$" -parallel="$PARALLEL" -fuzztime="$dur"
+  [ -n "$mt" ] && extra=(-fuzzminimizetime="$mt")
+  go test "$pkg" -run='^$' -fuzz="^${fn}\$" -parallel="$PARALLEL" -fuzztime="$dur" ${extra[@]+"${extra[@]}"}
 }
 
 # filter_targets: drop any "pkg|Func" whose Func is listed in $EXCLUDE
@@ -560,6 +645,9 @@ main() {
   # above discover()). PREBUILT_DIR defaults to a sibling of MODULE_DIR, same
   # convention as STATE_DIR/LOG_DIR/FINDINGS_DIR, and MUST stay outside GOCACHE.
   : "${FUZZ_PREBUILT:=0}"; : "${PREBUILT_DIR:=$MODULE_DIR-prebuilt}"
+  # Minimize-time cap for heavy coverage maps (off = unchanged behavior; see the
+  # section above minimize_cap_for).
+  : "${MINIMIZE_CAP:=off}"; : "${MINIMIZE_CAP_VALUE:=100x}"; : "${MINIMIZE_CAP_THRESHOLD:=100000}"
   [ -n "${CRASH_MODE:-}" ] && echo "fuzz-runner: CRASH_MODE is deprecated — rename it to REPORT_MODE in fuzz.conf (honored for now)" >&2
   local eff; eff="$(effective_report_mode)"
   [ "$eff" = "${REPORT_MODE}" ] || echo "fuzz-runner: report mode $REPORT_MODE -> $eff for standalone module (disclosure safety)" >&2
@@ -590,7 +678,7 @@ main() {
   local POS_FILE="$STATE_DIR/rotation-pos" i=0 s
   if [ -r "$POS_FILE" ]; then s="$(cat "$POS_FILE" 2>/dev/null || echo 0)"; [[ "$s" =~ ^[0-9]+$ ]] && i=$(( s % ${#TARGETS[@]} )); fi
 
-  local entry pkg fn dur d
+  local entry pkg fn dur d mt mbytes
   while true; do
     if [ "$(sha256sum "$CONF" | cut -d' ' -f1)" != "$CONF_HASH" ]; then
       log "fuzz.conf changed — reloading (resumes from rotation-pos)"; exec "$0" "$@"
@@ -608,8 +696,17 @@ main() {
     fi
     entry="${TARGETS[$i]}"; pkg="${entry%%|*}"; fn="${entry##*|}"; dur="$(resolve_duration "$fn")"
     echo "$(( (i+1) % ${#TARGETS[@]} ))" > "$POS_FILE"
-    log "=== fuzzing $fn ($pkg) for $dur ==="
-    run_slice "$pkg" "$fn" "$dur" >>"$LOG_DIR/${fn}.log" 2>&1
+    mt=""
+    if [ "$MINIMIZE_CAP" = on ]; then
+      mbytes="$(pkg_map_bytes "$pkg")"
+      if [[ "$mbytes" =~ ^[0-9]+$ ]]; then
+        mt="$(minimize_cap_for "$pkg")"
+      else
+        log "minimize-cap: coverage-map size unknown for $pkg — Go default (see $LOG_DIR/mapsize-build.log)"
+      fi
+    fi
+    log "=== fuzzing $fn ($pkg) for $dur${mt:+ minimizetime=$mt (map ${mbytes}B)} ==="
+    run_slice "$pkg" "$fn" "$dur" "$mt" >>"$LOG_DIR/${fn}.log" 2>&1
     rc=$?
     d="$(find . -type d -path "*/testdata/fuzz/$fn" 2>/dev/null | head -1)"
     if [ -n "$d" ] && [ -n "$(ls -A "$d" 2>/dev/null)" ]; then
