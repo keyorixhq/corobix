@@ -197,7 +197,7 @@ setup() {
   cd "$mod"
   run _find_repro_dir FuzzZ
   [ "$status" -eq 0 ]
-  [[ "$output" == /* ]]                                   # absolute, not "./..."
+  [[ "$output" == /* ]] || false                          # absolute, not "./..."
   [ "$output" = "$mod/testdata/fuzz/FuzzZ" ]
 }
 
@@ -311,4 +311,137 @@ _seed() {  # _seed <fn> <sat-lines-newline-sep> <ratePerSec> <warmupGoDur>
   go() { return 0; }
   REVERIFY_RUNS=3 run reproducer_reverifies FuzzX ./pkg
   [ "$status" -ne 0 ]
+}
+
+# --- minimize-time cap (MINIMIZE_CAP) ----------------------------------------
+# `go` is stubbed as a shell function throughout: these tests pin the runner's
+# own decisions (measure, cache, threshold, flag spelling per launch path), not
+# Go itself. `[[ ]] || false`: under bash 3.2 a bare [[ ]] that isn't a
+# test's last command never fails it (errexit ignores [[ ]]), so it would pass
+# vacuously. The real nm distance was checked by hand against a real
+# instrumented binary (keyorix internal/csvsafe = 5461 bytes).
+
+_fake_nm() {   # go tool nm output with the two counter symbols 0x1555 = 5461 apart
+  printf '%s\n' \
+    ' 102479340 D internal/fuzz._counters' \
+    ' 10247a895 D internal/fuzz._ecounters' \
+    ' 1000 T main.main'
+}
+
+@test "mapsize_of_bin: distance between _counters and _ecounters" {
+  go() { [ "$1 $2" = "tool nm" ] && _fake_nm; }
+  run mapsize_of_bin /fake.test
+  [ "$status" -eq 0 ]
+  [ "$output" = "5461" ]
+}
+
+@test "mapsize_of_bin: uninstrumented binary (no counters) -> empty, not an error" {
+  go() { printf ' 1000 T main.main\n'; }
+  run mapsize_of_bin /fake.test
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "minimize_cap_for: MINIMIZE_CAP off -> no flag even for a huge map" {
+  pkg_map_bytes() { echo 479378; }
+  MINIMIZE_CAP=off run minimize_cap_for example.com/m/internal/core
+  [ -z "$output" ]
+}
+
+@test "minimize_cap_for: over threshold -> default 100x" {
+  pkg_map_bytes() { echo 479378; }
+  MINIMIZE_CAP=on run minimize_cap_for example.com/m/internal/core
+  [ "$output" = "100x" ]
+}
+
+@test "minimize_cap_for: under threshold (csvsafe-sized) -> no flag" {
+  pkg_map_bytes() { echo 5461; }
+  MINIMIZE_CAP=on run minimize_cap_for example.com/m/internal/csvsafe
+  [ -z "$output" ]
+}
+
+@test "minimize_cap_for: exactly at threshold -> no flag (strictly greater)" {
+  pkg_map_bytes() { echo 100000; }
+  MINIMIZE_CAP=on MINIMIZE_CAP_THRESHOLD=100000 run minimize_cap_for p
+  [ -z "$output" ]
+}
+
+@test "minimize_cap_for: unknown size -> no flag (fail-safe)" {
+  pkg_map_bytes() { :; }
+  MINIMIZE_CAP=on run minimize_cap_for p
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "minimize_cap_for: custom value and threshold are honored" {
+  pkg_map_bytes() { echo 60000; }
+  MINIMIZE_CAP=on MINIMIZE_CAP_THRESHOLD=50000 MINIMIZE_CAP_VALUE=10x run minimize_cap_for p
+  [ "$output" = "10x" ]
+}
+
+@test "pkg_map_bytes: FUZZ_PREBUILT reads the generation's mapsizes.tsv (no build)" {
+  PREBUILT_DIR="$BATS_TEST_TMPDIR/pb"; PREBUILT_ACTIVE_SHA=abc; FUZZ_PREBUILT=1
+  mkdir -p "$PREBUILT_DIR/abc"
+  printf 'example.com/m/internal/core\t479378\n' > "$PREBUILT_DIR/abc/mapsizes.tsv"
+  go() { echo "UNEXPECTED go $*" >&2; return 1; }
+  run pkg_map_bytes example.com/m/internal/core
+  [ "$output" = "479378" ]
+}
+
+@test "pkg_map_bytes: go-test mode measures once per source key, then serves the cache" {
+  STATE_DIR="$BATS_TEST_TMPDIR/state"; LOG_DIR="$BATS_TEST_TMPDIR"; FUZZ_PREBUILT=0
+  prebuilt_key() { echo key1; }
+  go() {
+    case "$1 $2" in
+      "test -c") echo x >> "$BATS_TEST_TMPDIR/builds"; : > "${@: -2:1}" ;;  # -o <tmp>: create it
+      "tool nm") _fake_nm ;;
+    esac
+  }
+  run pkg_map_bytes example.com/m/internal/core
+  [ "$output" = "5461" ]
+  run pkg_map_bytes example.com/m/internal/core
+  [ "$output" = "5461" ]
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/builds")" -eq 1 ]
+}
+
+@test "pkg_map_bytes: a failed instrumented build is cached as unknown (no rebuild loop)" {
+  STATE_DIR="$BATS_TEST_TMPDIR/state2"; LOG_DIR="$BATS_TEST_TMPDIR"; FUZZ_PREBUILT=0
+  prebuilt_key() { echo key1; }
+  go() { echo x >> "$BATS_TEST_TMPDIR/builds2"; return 1; }
+  run pkg_map_bytes p
+  [ -z "$output" ]
+  run pkg_map_bytes p
+  [ -z "$output" ]
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/builds2")" -eq 1 ]
+}
+
+@test "pkg_map_bytes: a new source key drops the old key's cache" {
+  STATE_DIR="$BATS_TEST_TMPDIR/state3"; LOG_DIR="$BATS_TEST_TMPDIR"; FUZZ_PREBUILT=0
+  mkdir -p "$STATE_DIR/mapsize/oldkey"; echo 1 > "$STATE_DIR/mapsize/oldkey/p"
+  prebuilt_key() { echo newkey; }
+  go() { case "$1 $2" in "test -c") : > "${@: -2:1}" ;; "tool nm") _fake_nm ;; esac; }
+  run pkg_map_bytes p
+  [ ! -d "$STATE_DIR/mapsize/oldkey" ]
+  [ -f "$STATE_DIR/mapsize/newkey/p" ]
+}
+
+@test "run_slice (go test path): passes -fuzzminimizetime only when a cap is given" {
+  FUZZ_PREBUILT=0 PARALLEL=2
+  go() { echo "go $*"; }
+  run run_slice example.com/m/internal/core FuzzX 15m 100x
+  [[ "$output" == *" -fuzzminimizetime=100x"* ]] || false
+  run run_slice example.com/m/internal/csvsafe FuzzY 15m ""
+  [[ "$output" != *"minimizetime"* ]] || false
+}
+
+@test "run_slice (prebuilt path): passes -test.fuzzminimizetime to the binary" {
+  FUZZ_PREBUILT=1 PARALLEL=2 PREBUILT_DIR="$BATS_TEST_TMPDIR/pb2"; PREBUILT_ACTIVE_SHA=s1
+  mkdir -p "$PREBUILT_DIR/s1" "$BATS_TEST_TMPDIR/src"
+  printf 'example.com/m/internal/core\tcore\t%s\n' "$BATS_TEST_TMPDIR/src" > "$PREBUILT_DIR/s1/manifest.tsv"
+  printf '#!/bin/sh\necho "bin $*"\n' > "$PREBUILT_DIR/s1/core.test"; chmod +x "$PREBUILT_DIR/s1/core.test"
+  go() { [ "$1" = env ] && echo "$BATS_TEST_TMPDIR/gocache"; }
+  run run_slice example.com/m/internal/core FuzzX 15m 100x
+  [[ "$output" == *" -test.fuzzminimizetime=100x"* ]] || false
+  run run_slice example.com/m/internal/core FuzzX 15m ""
+  [[ "$output" != *"minimizetime"* ]] || false
 }
