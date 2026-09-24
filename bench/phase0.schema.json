@@ -1,0 +1,89 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Phase 0 benchmark result records",
+  "description": "One JSON file per unit of work, written under $RESULT_DIR/json/. Three shapes, distinguished by filename prefix (partA__/partB__/partC). A non-JSON companion, $RESULT_DIR/mapsize_table.csv (bug,condition,target,map_bytes,binary_kb,fuzzminimizetime), is written once per (bug,condition) by cmd_partA and is the authoritative record of the real fuzzminimizetime decision per target — see mapsize_of_bin/pkg_map_bytes_measured in phase0.sh.",
+  "oneOf": [
+    {
+      "title": "partA trial record — one bug-rediscovery trial",
+      "filename_pattern": "partA__<bug>__<base|after>__rep<N>.json",
+      "type": "object",
+      "required": ["bug", "condition", "rep", "duration_s", "cap_s", "found", "censored",
+                   "execs_at_failure", "failing_input", "oracle_message", "oracle_matches_bug",
+                   "cpu", "go_version"],
+      "properties": {
+        "bug": {"type": "string", "description": "bug_1..bug_6, matching phase0.sh's BUGS table"},
+        "condition": {"type": "string", "enum": ["base", "after"]},
+        "rep": {"type": "integer", "minimum": 1, "maximum": 10},
+        "duration_s": {"type": "integer", "description": "wall-clock time to first failure, or cap_s if censored"},
+        "cap_s": {"type": "integer", "const": 1800, "description": "30-minute trial cap"},
+        "found": {"type": "boolean", "description": "true iff go test reported --- FAIL before the cap"},
+        "censored": {"type": "boolean", "description": "true iff the trial hit cap_s with no failure. found and censored are never both true."},
+        "execs_at_failure": {"type": "integer", "description": "0 if not found"},
+        "failing_input": {"type": "string", "description": "path under testdata/fuzz/<Fn>/ to the minimized failing corpus entry; empty if not found"},
+        "oracle_message": {"type": "string", "description": "first line of the go test failure output; empty if not found"},
+        "oracle_matches_bug": {"type": "boolean", "description": "true iff oracle_message case-insensitively contains this bug's expected substring (see BUGS table's 5th field) — guards against counting an unrelated flake as a rediscovery"},
+        "cpu": {"type": "integer", "description": "logical CPU this trial was taskset-pinned to (one of 0,1,2,3)"},
+        "go_version": {"type": "string"}
+      },
+      "notes": [
+        "A record with found=false and censored=false should not occur (rc!=124 and no --- FAIL and duration_s<cap_s) — treat as a script bug if seen.",
+        "Per the task's stopping rule: a bug is excluded from the headline stats entirely if either condition has more than half its runs censored — that check reads across all 10 records for (bug,condition), not stored per-record.",
+        "Bugs dropped before any trial ran (prove_revert failed, or build failed after revert) have NO partA json files at all for that (bug,condition) — check notes.txt for the drop reason, don't infer absence as 0 censored."
+      ]
+    },
+    {
+      "title": "partB mechanics record — one target/condition/rep throughput sample",
+      "filename_pattern": "partB__<target>__<base|after>__rep<N>.json",
+      "type": "object",
+      "required": ["target", "condition", "rep", "wall_s", "execs", "execs_per_s",
+                   "new_interesting", "total_corpus", "map_bytes", "binary_size_kb"],
+      "properties": {
+        "target": {"type": "string"},
+        "condition": {"type": "string", "enum": ["base", "after"]},
+        "rep": {"type": "integer", "minimum": 1, "maximum": 3},
+        "wall_s": {"type": "integer", "description": "actual wall time of the go test invocation (should equal the requested -fuzztime plus build overhead)"},
+        "execs": {"type": "integer", "description": "cumulative execs from go test's own last progress line"},
+        "execs_per_s": {"type": "integer", "description": "execs / wall_s — recomputed, not the instantaneous rate go test prints (which trails toward the tick average near the end of a run)"},
+        "new_interesting": {"type": "integer"},
+        "total_corpus": {"type": "integer"},
+        "map_bytes": {"type": "string", "description": "REAL coverage-map size (distance between internal/fuzz._counters and internal/fuzz._ecounters in an instrumented `go test -c -fuzz='^Fuzz$'` binary), ported from fuzz-harness's own fuzz-runner.sh mapsize_of_bin/pkg_map_bytes (merged 2026-09-23). String type because the value is 'unknown' (not 0) when measurement fails — never conflate the two."},
+        "binary_size_kb": {"type": "integer", "description": "compiled test-binary size in KB — kept as an EXTRA labelled column per Andrei's request; this was the pre-correction proxy, now superseded by map_bytes for the actual fuzzminimizetime decision"}
+      },
+      "notes": [
+        "The identical-binary control run (partB_identical_control marker) is NOT written as JSON records — its two raw logs live at raw/partB-control-rep{1,2}.log; diff their parsed execs_per_s by hand or extend phase0_stats.py if this needs to feed the noise-floor calculation."
+      ]
+    },
+    {
+      "title": "partC record — build/footprint/attack-surface, BASE only, single file",
+      "filename_pattern": "partC.json",
+      "type": "object",
+      "required": ["binary_sizes", "go_list_deps_count", "syft_component_count",
+                   "govulncheck_finding_count", "system_route_count",
+                   "remote_storage_method_count", "proxy_handler_loc", "proxy_closure_rows"],
+      "properties": {
+        "binary_sizes": {
+          "type": "object",
+          "description": "keyed by cli/server/keyorix-mcp/keyorix-k8s-sync",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "plain_kb": {"type": "integer"},
+              "stripped_kb": {"type": "integer", "description": "-ldflags=-s -w"},
+              "build_s": {"type": "integer", "description": "plain build only; stripped build time not separately timed"}
+            }
+          }
+        },
+        "go_list_deps_count": {"type": "integer", "description": "go list -deps ./... line count"},
+        "syft_component_count": {"type": "integer", "description": "0 if syft failed/unavailable — check raw/partC-syft.json and notes.txt before treating 0 as a real finding"},
+        "govulncheck_finding_count": {"type": "integer"},
+        "system_route_count": {"type": "integer", "description": "distinct \"/system...\" string literals under server/http — a lower bound, not a route-table walk"},
+        "remote_storage_method_count": {"type": "integer"},
+        "proxy_handler_loc": {"type": "integer", "description": "total lines across every *_proxy.go under server/http"},
+        "proxy_closure_rows": {"type": "integer", "description": "rows in docs/security-closures.tsv mentioning 'proxy' — a text-match proxy for the real count, not a component-tagged query; the tsv has no component column to filter on directly"}
+      },
+      "notes": [
+        "Runtime metrics (idle RSS/fds/goroutines, startup-to-/health, k6/vegeta load-scenario percentiles, CLI wall time cold/warm/local/remote) described in the task are NOT YET IMPLEMENTED in phase0.sh — flagged explicitly in the metric list/estimate for sign-off, not silently omitted from this schema. They would land as additional partC.json fields or a partC_runtime.json sibling."
+      ]
+    }
+  ]
+}
