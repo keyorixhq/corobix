@@ -445,3 +445,195 @@ _fake_nm() {   # go tool nm output with the two counter symbols 0x1555 = 5461 ap
   run run_slice example.com/m/internal/core FuzzX 15m ""
   [[ "$output" != *"minimizetime"* ]] || false
 }
+
+# --- env_slug -----------------------------------------------------------------
+
+@test "env_slug: dots and slashes become underscores (valid bash identifier)" {
+  run env_slug example.com/m/internal/core
+  [ "$output" = "example_com_m_internal_core" ]
+}
+
+@test "env_slug: a github.com-style import path is a valid identifier" {
+  run env_slug github.com/keyorixhq/keyorix/server/http
+  [ "$output" = "github_com_keyorixhq_keyorix_server_http" ]
+  [[ "$output" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || false
+}
+
+# --- minimize_cap_for: per-package MINIMIZE_TIME_<slug> override -------------
+
+@test "minimize_cap_for: per-package override wins over the computed default" {
+  pkg_map_bytes() { echo 479378; }
+  MINIMIZE_CAP=on MINIMIZE_CAP_VALUE=100x MINIMIZE_TIME_example_com_m_internal_core=10x \
+    run minimize_cap_for example.com/m/internal/core
+  [ "$output" = "10x" ]
+}
+
+@test "minimize_cap_for: per-package override of 0 is honored, not treated as unset" {
+  pkg_map_bytes() { echo 479378; }
+  MINIMIZE_CAP=on MINIMIZE_TIME_example_com_m_internal_core=0 \
+    run minimize_cap_for example.com/m/internal/core
+  [ "$output" = "0" ]
+}
+
+@test "minimize_cap_for: override only applies to its own package" {
+  pkg_map_bytes() { echo 5461; }   # under threshold -- would normally be no-flag
+  MINIMIZE_CAP=on MINIMIZE_TIME_example_com_m_internal_core=10x \
+    run minimize_cap_for example.com/m/internal/OTHERPKG
+  [ -z "$output" ]
+}
+
+@test "minimize_cap_for: no override -> falls back to computed default as before" {
+  pkg_map_bytes() { echo 479378; }
+  MINIMIZE_CAP=on MINIMIZE_CAP_VALUE=100x run minimize_cap_for example.com/m/internal/core
+  [ "$output" = "100x" ]
+}
+
+@test "minimize_cap_for: override is still gated on MINIMIZE_CAP=on" {
+  pkg_map_bytes() { echo 479378; }
+  MINIMIZE_CAP=off MINIMIZE_TIME_example_com_m_internal_core=10x \
+    run minimize_cap_for example.com/m/internal/core
+  [ -z "$output" ]
+}
+
+# --- is_slow_target -----------------------------------------------------------
+
+@test "is_slow_target: rate below threshold -> slow" {
+  measured_exec_rate() { echo 5; }
+  CONCURRENT_SLOW_THRESHOLD=20 run is_slow_target FuzzX
+  [ "$status" -eq 0 ]
+}
+
+@test "is_slow_target: rate at or above threshold -> not slow" {
+  measured_exec_rate() { echo 20; }
+  CONCURRENT_SLOW_THRESHOLD=20 run is_slow_target FuzzX
+  [ "$status" -ne 0 ]
+}
+
+@test "is_slow_target: unmeasured (0) rate -> not slow (unknown is not confirmed-slow)" {
+  measured_exec_rate() { echo 0; }
+  CONCURRENT_SLOW_THRESHOLD=20 run is_slow_target FuzzX
+  [ "$status" -ne 0 ]
+}
+
+# --- pick_group_size -----------------------------------------------------------
+
+@test "pick_group_size: CONCURRENT_TARGETS off -> always 1" {
+  TARGETS=("pkg1|FuzzA" "pkg2|FuzzB" "pkg3|FuzzC")
+  is_slow_target() { return 0; }   # even if everything is "slow"
+  CONCURRENT_TARGETS=off run pick_group_size 0
+  [ "$output" = 1 ]
+}
+
+@test "pick_group_size: selected target itself not slow -> 1" {
+  TARGETS=("pkg1|FuzzA" "pkg2|FuzzB")
+  is_slow_target() { return 1; }
+  CONCURRENT_TARGETS=on run pick_group_size 0
+  [ "$output" = 1 ]
+}
+
+@test "pick_group_size: contiguous run of slow targets groups up to the cap" {
+  TARGETS=("pkg1|FuzzA" "pkg2|FuzzB" "pkg3|FuzzC" "pkg4|FuzzD")
+  is_slow_target() { return 0; }   # everything slow
+  CONCURRENT_TARGETS=on CONCURRENT_MAX_TARGETS=3 run pick_group_size 0
+  [ "$output" = 3 ]
+}
+
+@test "pick_group_size: stops at the first non-slow follower (contiguous-only)" {
+  TARGETS=("pkg1|FuzzA" "pkg2|FuzzB" "pkg3|FuzzC" "pkg4|FuzzD")
+  is_slow_target() { [ "$1" != FuzzC ]; }   # FuzzC (index 2) is fast
+  CONCURRENT_TARGETS=on CONCURRENT_MAX_TARGETS=3 run pick_group_size 0
+  [ "$output" = 2 ]
+}
+
+@test "pick_group_size: never exceeds the end of TARGETS (no wrap)" {
+  TARGETS=("pkg1|FuzzA" "pkg2|FuzzB" "pkg3|FuzzC")
+  is_slow_target() { return 0; }
+  CONCURRENT_TARGETS=on CONCURRENT_MAX_TARGETS=5 run pick_group_size 1   # only 2 entries remain (i=1,2)
+  [ "$output" = 2 ]
+}
+
+@test "pick_group_size: CONCURRENT_MAX_TARGETS floors at 2" {
+  TARGETS=("pkg1|FuzzA" "pkg2|FuzzB" "pkg3|FuzzC")
+  is_slow_target() { return 0; }
+  CONCURRENT_TARGETS=on CONCURRENT_MAX_TARGETS=1 run pick_group_size 0
+  [ "$output" = 2 ]
+}
+
+@test "pick_group_size: last target in TARGETS with nothing after it -> 1" {
+  TARGETS=("pkg1|FuzzA" "pkg2|FuzzB" "pkg3|FuzzC")
+  is_slow_target() { return 0; }
+  CONCURRENT_TARGETS=on CONCURRENT_MAX_TARGETS=3 run pick_group_size 2
+  [ "$output" = 1 ]
+}
+
+# --- run_target_group -----------------------------------------------------------
+# run_slice, reproducer_reverifies, handle_crash, record_saturation and
+# quarantine_unverified are all stubbed: these tests pin run_target_group's OWN
+# orchestration (which functions get called, how many times, with which
+# arguments derived from which group member) — not go test or the real crash
+# pipeline, exactly like the minimize-cap tests above pin the runner's
+# decisions rather than Go itself.
+
+@test "run_target_group: size 1 behaves exactly like the pre-concurrent single path" {
+  TARGETS=("pkgA|FuzzA")
+  LOG_DIR="$BATS_TEST_TMPDIR"; FINDINGS_DIR="$BATS_TEST_TMPDIR/findings"
+  resolve_duration() { echo 15m; }
+  MINIMIZE_CAP=off
+  run_slice() { echo "ran $1 $2 $3 $4" >> "$BATS_TEST_TMPDIR/calls"; return 0; }
+  record_saturation() { echo "sat $1" >> "$BATS_TEST_TMPDIR/calls"; }
+  run run_target_group 0 1
+  [ "$status" -eq 0 ]
+  grep -q '^ran pkgA FuzzA 15m $' "$BATS_TEST_TMPDIR/calls"
+  grep -q '^sat FuzzA$' "$BATS_TEST_TMPDIR/calls"
+}
+
+@test "run_target_group: size 2 runs both members and records saturation for both" {
+  TARGETS=("pkgA|FuzzA" "pkgB|FuzzB")
+  LOG_DIR="$BATS_TEST_TMPDIR"; FINDINGS_DIR="$BATS_TEST_TMPDIR/findings"
+  resolve_duration() { echo 15m; }
+  MINIMIZE_CAP=off
+  run_slice() { echo "ran $2" >> "$BATS_TEST_TMPDIR/calls"; return 0; }
+  record_saturation() { echo "sat $1" >> "$BATS_TEST_TMPDIR/calls"; }
+  run run_target_group 0 2
+  [ "$status" -eq 0 ]
+  grep -q '^ran FuzzA$' "$BATS_TEST_TMPDIR/calls"
+  grep -q '^ran FuzzB$' "$BATS_TEST_TMPDIR/calls"
+  grep -q '^sat FuzzA$' "$BATS_TEST_TMPDIR/calls"
+  grep -q '^sat FuzzB$' "$BATS_TEST_TMPDIR/calls"
+}
+
+@test "run_target_group: a reproducer dir for one member triggers handle_crash for THAT member only" {
+  TARGETS=("pkgA|FuzzA" "pkgB|FuzzB")
+  LOG_DIR="$BATS_TEST_TMPDIR"; FINDINGS_DIR="$BATS_TEST_TMPDIR/findings"
+  resolve_duration() { echo 15m; }
+  MINIMIZE_CAP=off REVERIFY_CRASH=off
+  mkdir -p "$BATS_TEST_TMPDIR/sub/testdata/fuzz/FuzzA"
+  echo x > "$BATS_TEST_TMPDIR/sub/testdata/fuzz/FuzzA/repro1"
+  cd "$BATS_TEST_TMPDIR/sub"
+  run_slice() { return 1; }
+  handle_crash() { echo "crash $1 $2 $3" >> "$BATS_TEST_TMPDIR/calls"; }
+  record_saturation() { :; }
+  run run_target_group 0 2
+  [ "$status" -eq 0 ]
+  grep -q '^crash FuzzA pkgA 1$' "$BATS_TEST_TMPDIR/calls"
+  ! grep -q 'crash FuzzB' "$BATS_TEST_TMPDIR/calls"
+}
+
+@test "run_target_group: unverified reproducer quarantines instead of alerting" {
+  TARGETS=("pkgA|FuzzA")
+  LOG_DIR="$BATS_TEST_TMPDIR"; FINDINGS_DIR="$BATS_TEST_TMPDIR/findings"
+  resolve_duration() { echo 15m; }
+  MINIMIZE_CAP=off REVERIFY_CRASH=on
+  mkdir -p "$BATS_TEST_TMPDIR/sub2/testdata/fuzz/FuzzA"
+  echo x > "$BATS_TEST_TMPDIR/sub2/testdata/fuzz/FuzzA/repro1"
+  cd "$BATS_TEST_TMPDIR/sub2"
+  run_slice() { return 1; }
+  reproducer_reverifies() { return 1; }   # transient
+  handle_crash() { echo "SHOULD NOT BE CALLED" >> "$BATS_TEST_TMPDIR/calls"; }
+  quarantine_unverified() { echo "quarantined $1" >> "$BATS_TEST_TMPDIR/calls"; }
+  record_saturation() { :; }
+  run run_target_group 0 1
+  [ "$status" -eq 0 ]
+  grep -q '^quarantined FuzzA$' "$BATS_TEST_TMPDIR/calls"
+  ! grep -q 'SHOULD NOT' "$BATS_TEST_TMPDIR/calls"
+}
