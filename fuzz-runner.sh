@@ -177,6 +177,14 @@ prebuilt_key() {
 # prebuilt_slug <pkg> -> filesystem-safe name for a package's binary/list files.
 prebuilt_slug() { printf '%s' "$1" | tr '/' '_'; }
 
+# env_slug <s> -> s with every character that isn't [A-Za-z0-9_] replaced by
+# '_' -- unlike prebuilt_slug (which only replaces '/' and is used to build
+# FILESYSTEM paths, where a dot is perfectly legal), this builds a valid bash
+# identifier out of an arbitrary Go package import path, which routinely
+# contains dots (github.com/..., example.com/...) -- used only for the
+# MINIMIZE_TIME_<slug> override variable name below.
+env_slug() { printf '%s' "$1" | tr -c 'A-Za-z0-9_' '_'; }
+
 # prebuilt_build <sha> -> builds every fuzz-target package's test binary + its
 # authoritative target list into a STAGING dir, then atomically renames it into
 # place only on FULL success. On any package's build/list failure it removes
@@ -364,12 +372,143 @@ pkg_map_bytes() {
 
 # minimize_cap_for <pkg> -> the -fuzzminimizetime value to pass for <pkg>, or
 # nothing (keep Go's default). Pure decision given pkg_map_bytes.
+#
+# A per-package override wins over the computed default: MINIMIZE_TIME_<slug>
+# (env_slug's identifier-safe form of pkg -- e.g. pkg
+# github.com/keyorixhq/keyorix/server/http becomes
+# MINIMIZE_TIME_github_com_keyorixhq_keyorix_server_http=0 or =10x; NOT the
+# same slug prebuilt_slug/pkg_map_bytes use for filesystem paths, since a
+# valid bash variable name can't contain the dots a Go import path routinely
+# has). This exists because the default,
+# uniform 100x was measured on PURE targets only (2026-09-23 A/B doc); the
+# one STATEFUL target measured there (server/http's HTTP sequence fuzzer)
+# only dropped from 66.7% to 30.3% stalled at 100x -- a stateful, heavy
+# package may need a different cap (10x, or 0 to disable minimization
+# entirely) once a real rig's numbers are in, without changing the global
+# default every other (pure) package still benefits from. Still gated on
+# MINIMIZE_CAP=on -- this overrides WHICH value is used, not whether the
+# feature is on at all.
 minimize_cap_for() {
   [ "${MINIMIZE_CAP:-off}" = on ] || return 0
-  local bytes; bytes="$(pkg_map_bytes "$1")"
+  local pkg="$1" ov bytes
+  ov="MINIMIZE_TIME_$(env_slug "$pkg")"
+  if [ -n "${!ov:-}" ]; then
+    echo "${!ov}"
+    return 0
+  fi
+  bytes="$(pkg_map_bytes "$pkg")"
   [[ "$bytes" =~ ^[0-9]+$ ]] || return 0
   [ "$bytes" -gt "${MINIMIZE_CAP_THRESHOLD:-100000}" ] && echo "${MINIMIZE_CAP_VALUE:-100x}"
   return 0
+}
+
+# --- Concurrent-target mode (opt-in via CONCURRENT_TARGETS=on) ---------------
+#
+# Some targets are fundamentally exec-cost-bound (real DB writes, PBKDF2,
+# fsync per iteration): raising -parallel within their OWN go-test process
+# barely moves execs/s, because the bottleneck is the shared DB
+# handle/file/KDF path every worker goroutine serializes on, not CPU. On a
+# multi-core rig that leaves cores idle while one slow target's single
+# go-test process fuzzes alone for its whole slice. When on, the runner uses
+# the exec-rate history it already records (measured_exec_rate, the same
+# history resolve_duration/is_saturated read) to recognize a target as
+# "slow", and if the CURRENT rotation target is slow, runs it alongside up
+# to CONCURRENT_MAX_TARGETS-1 OTHER slow targets as separate go-test
+# processes for the same slice, instead of one at a time.
+#
+# Grouping is deliberately CONTIGUOUS-ONLY: a group is TARGETS[i..i+k), never
+# an arbitrary scan-and-pick across the whole rotation. This keeps "advance i
+# by the group size" a correct, in-bounds forward step (the caller's
+# resume-position bookkeeping is unaffected by which OTHER targets happen to
+# be slow elsewhere in the list), and it never wraps past the end of
+# TARGETS -- a group straddling the wrap would re-enter index 0's
+# sync/corpus-sync/rediscovery reset mid-group, which this avoids entirely
+# by capping the window at len(TARGETS). The tradeoff: two slow targets that
+# aren't adjacent in the (sorted) target list are never grouped together.
+# That is a real limitation of this v1, not an oversight -- broadening it to
+# a non-contiguous pick would need the caller to track and skip specific
+# consumed indices out of order instead of a single forward advance, which
+# is meaningfully more state to get right for a first cut behind a
+# default-off flag.
+#
+# A target with NO measured rate yet (0, "unknown") is never treated as
+# slow -- only a CONFIRMED-slow target (from a prior run) can trigger
+# grouping, so a brand-new target's first run is never affected.
+
+# is_slow_target <fn> -> 0 (slow) iff fn has a nonzero measured exec rate
+# below CONCURRENT_SLOW_THRESHOLD execs/s; 1 otherwise (including "unknown").
+is_slow_target() {
+  local fn="$1" rate
+  rate="$(measured_exec_rate "$fn")"
+  [ "$rate" -gt 0 ] 2>/dev/null || return 1
+  [ "$rate" -lt "${CONCURRENT_SLOW_THRESHOLD:-20}" ]
+}
+
+# pick_group_size <i> -> how many of TARGETS[i..] (>= 1) to run together this
+# round. 1 (no grouping) unless CONCURRENT_TARGETS=on, TARGETS[i] is itself
+# slow, and one or more IMMEDIATELY FOLLOWING entries are also slow (see the
+# contiguous-only rationale above), up to CONCURRENT_MAX_TARGETS (default 3,
+# floored at 2 -- a "group" of 1 is a no-op by construction and isn't a
+# valid request). Reads the global TARGETS array set up by main().
+pick_group_size() {
+  local i="$1" n="${#TARGETS[@]}" cap="${CONCURRENT_MAX_TARGETS:-3}" j size=1
+  [ "${CONCURRENT_TARGETS:-off}" = on ] || { echo 1; return; }
+  [ "$cap" -ge 2 ] || cap=2
+  is_slow_target "${TARGETS[$i]##*|}" || { echo 1; return; }
+  for (( j = i + 1; j < n && size < cap; j++ )); do
+    is_slow_target "${TARGETS[$j]##*|}" || break
+    size=$(( size + 1 ))
+  done
+  echo "$size"
+}
+
+# run_target_group <i> <gsize> -> runs TARGETS[i..i+gsize) for this
+# rotation round: each member's own resolve_duration/minimize_cap_for
+# (targets in a group are not assumed to share a duration or minimize-time
+# override), launched concurrently as separate go-test processes when
+# gsize>1 (exactly run_slice's existing invocation, just backgrounded and
+# waited on instead of run serially -- same per-target log file, same
+# fuzzcachedir, same everything else), then applies the SAME crash-check +
+# reverify + record_saturation handling the runner has always done, once
+# per group member. Does NOT touch POS_FILE or i -- the caller resolves and
+# persists the group size BEFORE calling this, so a kill mid-group still
+# resumes at the correct next position exactly as a kill mid-single-target
+# slice always has.
+run_target_group() {
+  local i="$1" gsize="$2" gi gentry gpkg gfn gdur gmt gmbytes d idx rc
+  local -a group_fns=() pids=()
+  for (( gi = 0; gi < gsize; gi++ )); do
+    group_fns+=("${TARGETS[$((i + gi))]}")
+  done
+  [ "$gsize" -gt 1 ] && log "=== concurrent group (${gsize}): ${group_fns[*]} ==="
+  for gentry in "${group_fns[@]}"; do
+    gpkg="${gentry%%|*}"; gfn="${gentry##*|}"
+    gdur="$(resolve_duration "$gfn")"
+    gmt=""
+    if [ "$MINIMIZE_CAP" = on ]; then
+      gmbytes="$(pkg_map_bytes "$gpkg")"
+      [[ "$gmbytes" =~ ^[0-9]+$ ]] && gmt="$(minimize_cap_for "$gpkg")"
+    fi
+    [ "$gsize" -eq 1 ] && log "=== fuzzing $gfn ($gpkg) for $gdur${gmt:+ minimizetime=$gmt (map ${gmbytes}B)} ==="
+    ( run_slice "$gpkg" "$gfn" "$gdur" "$gmt" >>"$LOG_DIR/${gfn}.log" 2>&1 ) &
+    pids+=("$!")
+  done
+  for idx in "${!pids[@]}"; do
+    wait "${pids[$idx]}"; rc=$?
+    gentry="${group_fns[$idx]}"; gpkg="${gentry%%|*}"; gfn="${gentry##*|}"
+    d="$(find . -type d -path "*/testdata/fuzz/$gfn" 2>/dev/null | head -1)"
+    if [ -n "$d" ] && [ -n "$(ls -A "$d" 2>/dev/null)" ]; then
+      if [ "${REVERIFY_CRASH:-on}" = on ] && ! reproducer_reverifies "$gfn" "$gpkg"; then
+        log "$gfn: reproducer did NOT re-fail on ${REVERIFY_RUNS:-1}x replay — transient worker death, not alerting (local copy kept in $FINDINGS_DIR/$gfn)"
+        quarantine_unverified "$gfn"
+      else
+        handle_crash "$gfn" "$gpkg" "$rc"
+      fi
+    elif [ "$rc" -ne 0 ]; then
+      log "$gfn exited $rc with no reproducer — infra/timeout, logged not alerted"
+    fi
+    record_saturation "$gfn"
+  done
 }
 
 # run_slice <pkg> <fn> <dur> -> exactly today's `go test ... -fuzz=...`
@@ -648,6 +787,9 @@ main() {
   # Minimize-time cap for heavy coverage maps (off = unchanged behavior; see the
   # section above minimize_cap_for).
   : "${MINIMIZE_CAP:=off}"; : "${MINIMIZE_CAP_VALUE:=100x}"; : "${MINIMIZE_CAP_THRESHOLD:=100000}"
+  # Concurrent-target mode (off = unchanged behavior; see the section above
+  # is_slow_target). CONCURRENT_MAX_TARGETS floors at 2 inside pick_group_size.
+  : "${CONCURRENT_TARGETS:=off}"; : "${CONCURRENT_SLOW_THRESHOLD:=20}"; : "${CONCURRENT_MAX_TARGETS:=3}"
   [ -n "${CRASH_MODE:-}" ] && echo "fuzz-runner: CRASH_MODE is deprecated — rename it to REPORT_MODE in fuzz.conf (honored for now)" >&2
   local eff; eff="$(effective_report_mode)"
   [ "$eff" = "${REPORT_MODE}" ] || echo "fuzz-runner: report mode $REPORT_MODE -> $eff for standalone module (disclosure safety)" >&2
@@ -678,7 +820,7 @@ main() {
   local POS_FILE="$STATE_DIR/rotation-pos" i=0 s
   if [ -r "$POS_FILE" ]; then s="$(cat "$POS_FILE" 2>/dev/null || echo 0)"; [[ "$s" =~ ^[0-9]+$ ]] && i=$(( s % ${#TARGETS[@]} )); fi
 
-  local entry pkg fn dur d mt mbytes
+  local gsize
   while true; do
     if [ "$(sha256sum "$CONF" | cut -d' ' -f1)" != "$CONF_HASH" ]; then
       log "fuzz.conf changed — reloading (resumes from rotation-pos)"; exec "$0" "$@"
@@ -694,37 +836,10 @@ main() {
     elif [ "$SOURCE_MODE" = "git" ]; then
       sync_main
     fi
-    entry="${TARGETS[$i]}"; pkg="${entry%%|*}"; fn="${entry##*|}"; dur="$(resolve_duration "$fn")"
-    echo "$(( (i+1) % ${#TARGETS[@]} ))" > "$POS_FILE"
-    mt=""
-    if [ "$MINIMIZE_CAP" = on ]; then
-      mbytes="$(pkg_map_bytes "$pkg")"
-      if [[ "$mbytes" =~ ^[0-9]+$ ]]; then
-        mt="$(minimize_cap_for "$pkg")"
-      else
-        log "minimize-cap: coverage-map size unknown for $pkg — Go default (see $LOG_DIR/mapsize-build.log)"
-      fi
-    fi
-    log "=== fuzzing $fn ($pkg) for $dur${mt:+ minimizetime=$mt (map ${mbytes}B)} ==="
-    run_slice "$pkg" "$fn" "$dur" "$mt" >>"$LOG_DIR/${fn}.log" 2>&1
-    rc=$?
-    d="$(find . -type d -path "*/testdata/fuzz/$fn" 2>/dev/null | head -1)"
-    if [ -n "$d" ] && [ -n "$(ls -A "$d" 2>/dev/null)" ]; then
-      # A reproducer exists. Unless it re-verifies (replays and re-fails), treat it as a
-      # transient worker death — keep a local copy but do NOT alert or push. Only a
-      # confirmed-reproducing input reaches handle_crash. REVERIFY_CRASH=off restores the
-      # old always-alert behavior.
-      if [ "${REVERIFY_CRASH:-on}" = on ] && ! reproducer_reverifies "$fn" "$pkg"; then
-        log "$fn: reproducer did NOT re-fail on ${REVERIFY_RUNS:-1}x replay — transient worker death, not alerting (local copy kept in $FINDINGS_DIR/$fn)"
-        quarantine_unverified "$fn"
-      else
-        handle_crash "$fn" "$pkg" "$rc"
-      fi
-    elif [ "$rc" -ne 0 ]; then
-      log "$fn exited $rc with no reproducer — infra/timeout, logged not alerted"
-    fi
-    record_saturation "$fn"
-    i=$(( (i+1) % ${#TARGETS[@]} ))
+    gsize="$(pick_group_size "$i")"
+    echo "$(( (i+gsize) % ${#TARGETS[@]} ))" > "$POS_FILE"
+    run_target_group "$i" "$gsize"
+    i=$(( (i+gsize) % ${#TARGETS[@]} ))
   done
 }
 
