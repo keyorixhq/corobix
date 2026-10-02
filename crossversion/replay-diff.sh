@@ -77,7 +77,10 @@ done
 
 for req in MODULE FUNC; do
 	if [ -z "${!req}" ]; then
-		echo "replay-diff: --${req,,} is required" >&2
+		# ${req,,} (bash 4+ case conversion) is not portable to bash 3.2 (macOS's
+		# default /bin/bash) -- tr is.
+		req_lower="$(printf '%s' "$req" | tr '[:upper:]' '[:lower:]')"
+		echo "replay-diff: --${req_lower} is required" >&2
 		exit 2
 	fi
 done
@@ -86,6 +89,12 @@ if [ "${#DEPS[@]}" -eq 0 ] || [ "${#DEPS[@]}" -ne "${#OLD_VERS[@]}" ] || [ "${#D
 	exit 2
 fi
 [ -f "$MODULE/go.mod" ] || { echo "replay-diff: '$MODULE/go.mod' not found" >&2; exit 2; }
+# "${DEPS[@]}" is safe here (bash 3.2 raises "unbound variable" under set -u for
+# a direct [@]/[*] expansion of a genuinely EMPTY array -- confirmed above this
+# can never be empty at this point), kept as a plain expansion rather than the
+# defensive "${DEPS[@]:-}" form used below for arrays that CAN legitimately be
+# empty (CORPUS_FILES), so an accidental future loosening of the >=1 check above
+# doesn't silently reintroduce the crash this comment is warning about.
 for d in "${DEPS[@]}"; do
 	if ! grep -q "$d" "$MODULE/go.mod"; then
 		echo "replay-diff: '$d' is not a dependency of $MODULE/go.mod" >&2

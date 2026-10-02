@@ -69,7 +69,10 @@ done
 
 for req in MODULE PKG FUNC CRASHER; do
 	if [ -z "${!req}" ]; then
-		echo "triage-crasher: --${req,,} is required" >&2
+		# ${req,,} (bash 4+ case conversion) is not portable to bash 3.2 (macOS's
+		# default /bin/bash) -- tr is.
+		req_lower="$(printf '%s' "$req" | tr '[:upper:]' '[:lower:]')"
+		echo "triage-crasher: --${req_lower} is required" >&2
 		exit 2
 	fi
 done
