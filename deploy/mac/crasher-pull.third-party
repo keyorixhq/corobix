@@ -1,0 +1,11 @@
+# Fuzz targets whose crashers are in a THIRD-PARTY library (an undisclosed vulnerability
+# in somebody else's code). A crasher pulled for one of these gets a
+# <hash>.DO-NOT-PUBLISH marker next to it in the quarantine and "third-party" in the ledger.
+# One target name per line, exactly as the directory under ~/lane/crashers/ is named.
+#
+# UNVERIFIED PLACEHOLDERS: the two names below are guesses (crewjam/saml and
+# digitorus/pkcs7 are the third-party libraries named in COMMON-RULES). Andrei: check them
+# against `ls ~/lane/crashers/` on the hosts or swap this file for the registry before
+# the first real pull. A target missing here is pulled normally, just without the marker.
+saml
+pkcs7

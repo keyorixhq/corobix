@@ -7,7 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 echo "== shellcheck =="
-shellcheck fuzz-runner.sh harvest-crashers.sh scripts/require-deadline.sh scripts/check-shared-pins.sh crossversion/replay-diff.sh scripts/triage-crasher.sh
+shellcheck fuzz-runner.sh harvest-crashers.sh crasher-pull.sh crasher-watch.sh scripts/require-deadline.sh scripts/check-shared-pins.sh crossversion/replay-diff.sh scripts/triage-crasher.sh
 
 echo "== bats =="
 bats tests/
