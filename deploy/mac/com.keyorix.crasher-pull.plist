@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Schedule fallback: one pass at login and every 10 minutes, whatever the triggers did. -->
+  <key>Label</key><string>com.keyorix.crasher-pull</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__INSTALL_DIR__/crasher-pull.sh</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>600</integer>
+  <key>StandardErrorPath</key><string>__HOME__/.crasher-pull/pull.log</string>
+  <key>StandardOutPath</key><string>__HOME__/.crasher-pull/pull.log</string>
+  <key>ProcessType</key><string>Background</string>
+</dict>
+</plist>
