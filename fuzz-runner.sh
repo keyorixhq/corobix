@@ -5,6 +5,8 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/fuzz-report.sh
+source "$SCRIPT_DIR/lib/fuzz-report.sh"
 
 log()   { echo "[$(date -u +%FT%TZ)] $*" | tee -a "${LOG_DIR:-/tmp}/rotation.log" >&2; }
 notify(){ [ -n "${NOTIFY_URL:-}" ] && curl -fsS -m 10 -d "$1" "$NOTIFY_URL" >/dev/null 2>&1 || true; }
@@ -720,12 +722,12 @@ handle_crash() { # $1=fn $2=pkg $3=rc ; called only when a real reproducer exist
       git push -f -u "$GIT_REMOTE" "$CORPUS_BRANCH" -q 2>/dev/null || log "push failed for $CORPUS_BRANCH (non-fatal)"
       command -v gh >/dev/null && gh pr create --base "$GIT_BRANCH" --head "$CORPUS_BRANCH" \
         --title "fuzz(crash): $fn" --body "Crash reproducer for \`$fn\` in \`$pkg\`. Reproduce: \`go test -run='^$fn\$' $pkg\`." >/dev/null 2>&1 || true
-      notify "CRASH (public PR) $fn in $pkg"
+      notify "$(fuzz_report_msg "public PR" "$fn" "$pkg" "$dest")"
       ;;
     private)
       log "CRASH $fn ($pkg) rc=$rc — pushing to private $CORPUS_REPO (local copy -> $dest)"
       push_crasher_private "$fn" "$pkg" "$ts" "$src"
-      notify "CRASH (private) $fn in $pkg -> $CORPUS_PROJECT"
+      notify "$(fuzz_report_msg "private" "$fn" "$pkg" "$dest" "pushed to $CORPUS_PROJECT")"
       ;;
     issue)
       # PUBLIC GitHub issue as a repro POINTER — never the raw crashing input
@@ -750,11 +752,11 @@ handle_crash() { # $1=fn $2=pkg $3=rc ; called only when a real reproducer exist
       else
         log "gh not available — cannot open issue; reproducer kept local -> $dest"
       fi
-      notify "CRASH (issue) $fn in $pkg"
+      notify "$(fuzz_report_msg "issue" "$fn" "$pkg")"   # no path arg — disclosure safety
       ;;
     *)
       log "CRASH $fn ($pkg) rc=$rc — reproducer(s) -> $dest (mode=local, NOT published)"
-      notify "CRASH (local) $fn in $pkg -> $dest"
+      notify "$(fuzz_report_msg "local" "$fn" "$pkg" "$dest")"
       ;;
   esac
 }
