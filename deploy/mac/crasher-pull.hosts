@@ -1,0 +1,7 @@
+# The FIXED host list for crasher-pull.sh. Edited only by a reviewed change to this file;
+# never taken from an issue, an ntfy message or the command line.
+#   <name>             <ssh destination>   [<jump host, or "-">]
+# <ssh destination> is an alias from ~/.ssh/config on the Mac; put the bastion there
+# (ProxyJump) exactly as for the manual pulls today, or give it in the third column.
+vcd-keyorix-fuzz     vcd-keyorix-fuzz    -
+vcd-dashdiag-fuzz    vcd-dashdiag-fuzz   -
