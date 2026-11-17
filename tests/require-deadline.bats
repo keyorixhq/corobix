@@ -15,9 +15,7 @@ func withinDeadline(t *testing.T, fn func()) {
 	t.Helper()
 	done := make(chan struct{})
 	go func() { defer close(done); fn() }()
-	select {
-	case <-done:
-	case <-time.After(perInputDeadline):
+	if _, ok, _ := Wait(done, perInputDeadline); !ok {
 		t.Fatalf("exceeded %s", perInputDeadline)
 	}
 }

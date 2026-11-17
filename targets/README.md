@@ -46,6 +46,19 @@ bats tests/require-deadline.bats     # its own unit tests
 A target that genuinely cannot use the deadline (e.g. a replay-only smoke target that
 does no parsing) must carry a `//fuzzlint:no-deadline: <reason>` line inside the
 function to document the exception.
+## Freeze-aware deadline
+
+`withinDeadline` waits through `Wait` (`targets/*/stall_test.go`, generated from
+`shared/stall.go.body` by `scripts/sync-stall.sh`): a process-wide monitor records stretches
+where the whole process was not scheduled (GC, swap, cgroup throttling, host contention on
+the shared rigs), and a deadline miss that overlaps a freeze gets one more full budget
+before it is reported. Only a call still running after that fails, so a frozen box no
+longer produces "possible algorithmic-complexity DoS" findings that never reproduce.
+`FUZZ_STALL_LOG=<file>` appends one line per detected freeze (the runner sets it per slice
+and summarises it in `stalls.tsv`). `scripts/sync-stall.sh --check [FILE...]` fails when any
+copy drifts from the canonical body; pass the keyorix/dashdiag `internal/fuzzutil/stall.go`
+paths to check those too. Canonical logic: keyorixhq/keyorix `internal/fuzzutil/stall.go`.
+
 ## Not in this repo (by design)
 - `fuzz.conf` — per-rig config (ntfy URL, corpus remote, `EXCLUDE`, durations): box-local, gitignored.
 - `testdata/fuzz/` — generated corpus + crash reproducers: backed up to the private `fuzz-corpus` repo.
