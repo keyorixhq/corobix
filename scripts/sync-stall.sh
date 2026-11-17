@@ -19,7 +19,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 BODY=shared/stall.go.body
-MODE=write
+MODE="write"
 if [ "${1:-}" = "--check" ]; then MODE=check; shift; fi
 [ -f "$BODY" ] || { echo "sync-stall: $BODY missing" >&2; exit 2; }
 
