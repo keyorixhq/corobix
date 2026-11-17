@@ -476,7 +476,7 @@ pick_group_size() {
 # slice always has.
 run_target_group() {
   local i="$1" gsize="$2" gi gentry gpkg gfn gdur gmt gmbytes d idx rc
-  local -a group_fns=() pids=()
+  local -a group_fns=() pids=() offs=()
   for (( gi = 0; gi < gsize; gi++ )); do
     group_fns+=("${TARGETS[$((i + gi))]}")
   done
@@ -490,6 +490,7 @@ run_target_group() {
       [[ "$gmbytes" =~ ^[0-9]+$ ]] && gmt="$(minimize_cap_for "$gpkg")"
     fi
     [ "$gsize" -eq 1 ] && log "=== fuzzing $gfn ($gpkg) for $gdur${gmt:+ minimizetime=$gmt (map ${gmbytes}B)} ==="
+    offs+=("$(wc -c < "$LOG_DIR/${gfn}.log" 2>/dev/null || echo 0)")
     ( run_slice "$gpkg" "$gfn" "$gdur" "$gmt" >>"$LOG_DIR/${gfn}.log" 2>&1 ) &
     pids+=("$!")
   done
@@ -505,10 +506,41 @@ run_target_group() {
         handle_crash "$gfn" "$gpkg" "$rc"
       fi
     elif [ "$rc" -ne 0 ]; then
-      log "$gfn exited $rc with no reproducer — infra/timeout, logged not alerted"
+      report_nonrepro_exit "$gfn" "$rc" "${offs[$idx]:-0}"
     fi
     record_saturation "$gfn"
   done
+}
+
+# seed_failure_message <fn> <offset> -> prints the first Go failure line and returns 0 when the
+# slice output appended to $LOG_DIR/<fn>.log after byte <offset> shows the fuzz target failing on
+# its own SEED corpus ("failure while testing seed corpus entry"). That failure is deterministic
+# (it replays every rotation), so it means the harness or target is broken, NOT infra/timeout.
+# Only this slice's output is examined: the log is append-only across rotations.
+seed_failure_message() {
+  local fn="$1" off="${2:-0}" out
+  out="$(tail -c +"$((off + 1))" "$LOG_DIR/${fn}.log" 2>/dev/null)"
+  printf '%s\n' "$out" | grep -q 'failure while testing seed corpus entry' || return 1
+  printf '%s\n' "$out" | grep -m1 -E '^[[:space:]]+[A-Za-z0-9_./-]+\.go:[0-9]+:' | sed -E 's/^[[:space:]]+//' | cut -c1-300
+  return 0
+}
+
+# report_nonrepro_exit <fn> <rc> <offset>: a non-zero exit with no reproducer file. A seed-corpus
+# failure is alerted (once per target per day, so a permanently broken target cannot spam);
+# anything else keeps the old "infra/timeout, logged not alerted" behaviour.
+report_nonrepro_exit() {
+  local fn="$1" rc="$2" off="${3:-0}" msg stamp today
+  if msg="$(seed_failure_message "$fn" "$off")"; then
+    log "$fn: SEED CORPUS FAILURE (exit $rc) — deterministic, harness/target broken, not infra: ${msg:-no failure line captured}"
+    today="$(date -u +%Y-%m-%d)"
+    stamp="${STATE_DIR:-.}/seedfail-${fn}"
+    if [ "$(cat "$stamp" 2>/dev/null)" != "$today" ]; then
+      printf '%s\n' "$today" > "$stamp" 2>/dev/null || true
+      notify "HARNESS BROKEN: $fn fails on its own seed corpus on $(hostname) — ${msg:-see $LOG_DIR/${fn}.log}"
+    fi
+  else
+    log "$fn exited $rc with no reproducer — infra/timeout, logged not alerted"
+  fi
 }
 
 # run_slice <pkg> <fn> <dur> -> exactly today's `go test ... -fuzz=...`
