@@ -171,6 +171,12 @@ scripts/check.sh                   local pre-PR gate (shellcheck + bats + go vet
 targets/{libs,libs-extra}/         standalone third-party-lib fuzz target modules
 ```
 
+## Contributing / reporting issues
+
+Found a security issue? See [`SECURITY.md`](SECURITY.md) — don't open a
+public issue for that. Found a regular bug, or want to propose a change or
+a new fuzz target? See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
 ## License
 
 Apache License 2.0 — see [`LICENSE`](LICENSE).
