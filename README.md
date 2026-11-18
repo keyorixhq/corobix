@@ -1,14 +1,14 @@
 # corobix
 
-A thin, universal continuous-fuzz **rotation runner** for Go projects using the
-native fuzzing engine (`go test -fuzz`). One `fuzz-runner.sh` + one `fuzz.conf`
-drives a long-running rig that discovers every `Fuzz*` target in a module,
-fuzzes them one at a time in a loop, and either files crash reproducers
+A lightweight, universal continuous-fuzz **rotation runner** for Go projects using the
+native fuzzing engine (`go test -fuzz`). `fuzz-runner.sh`, driven by a per-module
+`fuzz.conf`, drives a long-running rig that discovers every `Fuzz*` target in a
+module, fuzzes them one at a time in a loop, and either files crash reproducers
 privately or opens a PR — depending on the module.
 
-This is **not** a fuzzing platform. It is deliberately ~130 lines of bash with
-no daemon, no database, no web UI. It exists so that standing up a new soak rig
-(own code on own hardware, or a third-party library) is a config file, not a
+This is **not** a fuzzing platform. There's no daemon, no database, no web UI —
+just shell scripts and `go test -fuzz`. It exists so that standing up a new soak
+rig (own code on own hardware, or a third-party library) is a config file, not a
 new script. See the design rationale and the "when to reach for something
 heavier" triggers in the Keyorix project doc
 `claude/2026-09-13-fuzzing-tooling-decisions.md`.
