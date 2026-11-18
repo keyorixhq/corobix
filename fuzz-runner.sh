@@ -821,6 +821,23 @@ handle_crash() { # $1=fn $2=pkg $3=rc ; called only when a real reproducer exist
   # Always keep a local copy first, so no reproducer is ever lost to a push failure.
   dest="$FINDINGS_DIR/$fn/$ts"; mkdir -p "$dest"
   [ -n "$src" ] && cp -a "$src"/. "$dest"/ 2>/dev/null
+  # Also mirror into the trusted Mac-side puller's expected layout
+  # ($HOME/lane/crashers/<target>/<hash>/ — see deploy/mac/crasher-pull.sh
+  # and its README). The puller never trusts this directory's NAME as a
+  # hash — it independently manifests the content on both ends and
+  # compares those — so it only needs to look like one (fuzz-lane.sh's own
+  # convention: sha256 of the concatenated reproducer bytes, cut to 12
+  # hex chars). Best-effort and non-fatal: a mirror failure must never
+  # affect $dest above, which is the one copy everything else here
+  # depends on.
+  if [ -n "$src" ]; then
+    local lane_hash lane_dest
+    lane_hash="$(cat "$src"/* 2>/dev/null | sha256sum | cut -c1-12)"; [ -n "$lane_hash" ] || lane_hash="$ts"
+    lane_dest="${LANE_CRASHERS_DIR:-$HOME/lane/crashers}/$fn/$lane_hash"
+    # shellcheck disable=SC2015  # intended: log on failure of EITHER step, not if-then-else
+    mkdir -p "$lane_dest" 2>/dev/null && cp -a "$src"/. "$lane_dest"/ 2>/dev/null \
+      || log "lane/crashers mirror failed for $fn (non-fatal; $dest is unaffected)"
+  fi
   case "$mode" in
     pr)
       log "CRASH $fn ($pkg) rc=$rc — opening PUBLIC PR on $CORPUS_BRANCH"
