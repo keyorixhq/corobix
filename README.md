@@ -1,21 +1,67 @@
 # corobix
 
-A lightweight, universal continuous-fuzz **rotation runner** for Go projects using the
-native fuzzing engine (`go test -fuzz`). `fuzz-runner.sh`, driven by a per-module
-`fuzz.conf`, drives a long-running rig that discovers every `Fuzz*` target in a
-module, fuzzes them one at a time in a loop, and either files crash reproducers
-privately or opens a PR — depending on the module.
+**Corobix is a lightweight, universal continuous-fuzz rotation runner for Go
+projects today — and the first shipped piece of a larger plan.** The direction
+is an AI-guided Go security platform that turns raw SAST alerts into
+reproduced, verified bugs instead of a pile of alerts to triage by hand.
+`fuzz-runner.sh` is the fuzzing engine that plan is built around — see
+[Where this is going](#where-this-is-going) for the rest, and what's not built
+yet.
 
-This is **not** a fuzzing platform. There's no daemon, no database, no web UI —
-just shell scripts and `go test -fuzz`. It exists so that standing up a new soak
-rig (own code on own hardware, or a third-party library) is a config file, not a
-new script. See the design rationale and the "when to reach for something
-heavier" triggers in the Keyorix project doc
+## What's built today
+
+`fuzz-runner.sh`, driven by a per-module `fuzz.conf`, drives a long-running rig
+that discovers every `Fuzz*` target in a module using the native fuzzing
+engine (`go test -fuzz`), fuzzes them one at a time in a loop, and either
+files crash reproducers privately or opens a PR — depending on the module.
+
+This is **not** a fuzzing platform on its own. There's no daemon, no database,
+no web UI — just shell scripts and `go test -fuzz`. It exists so that standing
+up a new soak rig (own code on own hardware, or a third-party library) is a
+config file, not a new script. See the design rationale and the "when to
+reach for something heavier" triggers in the Keyorix project doc
 `claude/2026-09-13-fuzzing-tooling-decisions.md`.
 
 <!-- STATS:BEGIN (auto-updated by registry/gen_public_stats.py — don't hand-edit) -->
 **So far: 9 vulnerabilities + 53 other defects found across 34 open-source Go libraries** via continuous fuzzing — see [`STATS.md`](STATS.md) for the breakdown by severity and category, and links to the ones already publicly disclosed. Regenerated periodically from an internal registry.
 <!-- STATS:END -->
+
+## Where this is going
+
+The rotation runner above solves "keep fuzzing running without babysitting
+it." It doesn't solve the harder problem most teams actually have: a SAST
+scanner (CodeQL, Semgrep) hands back hundreds of alerts with no signal on
+which ones are real, reachable, or worth anyone's time. The plan is to close
+that loop end to end:
+
+- **SAST-guided target selection** — turn a SAST alert's sink into an
+  automatically generated or selected fuzz target, instead of fuzzing a
+  module uniformly and hoping coverage happens to reach the sink.
+- **DAST-confirmed reachability** — before spending fuzz-hours on an alert,
+  run a DAST pass (Nuclei / ZAP) to confirm the sink is actually reachable
+  from an entry point, not just present in the call graph.
+- **Mutation-tested corpus quality** — use mutation testing (`gomu`) to check
+  whether the fuzz corpus would actually *catch* a planted bug at that sink,
+  not just whether it covers the line. Coverage without a mutation kill is a
+  false sense of safety.
+- **One shared findings/reachability registry** — SAST alerts, DAST
+  confirmations, fuzz crashes, and mutation-kill results feed one model
+  instead of four disconnected tools' outputs, so a finding's status
+  (alert-only / reachability-confirmed / reproduced / fixed) is tracked end
+  to end.
+- **Reuse, don't rebuild** — integrate existing engines (CodeQL, Semgrep,
+  Nuclei, ZAP, OSV-Scanner, `gomu`, DefectDojo) rather than write new
+  scanners. The actual new work is the glue between them: SBOM-driven target
+  selection, security-sink-ranked mutation survival, the alert-validator
+  loop, and reachability reconciliation across tools that don't natively
+  talk to each other.
+
+The goal: push a button, get a confirmed, reproduced bug — not a raw alert to
+triage yourself. **None of the SAST/DAST/mutation integration exists in this
+repo yet.** `fuzz-runner.sh`, documented below, is the one piece that's
+actually built and running. Treat this section as direction, not a feature
+list — check the repo's activity or releases rather than assuming any of it
+is wired in.
 
 ## Why native `go test -fuzz`
 
