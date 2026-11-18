@@ -7,6 +7,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/fuzz-report.sh
 source "$SCRIPT_DIR/lib/fuzz-report.sh"
+# shellcheck source=lib/exit-classify.sh
+source "$SCRIPT_DIR/lib/exit-classify.sh"
 
 log()   { echo "[$(date -u +%FT%TZ)] $*" | tee -a "${LOG_DIR:-/tmp}/rotation.log" >&2; }
 notify(){ [ -n "${NOTIFY_URL:-}" ] && curl -fsS -m 10 -d "$1" "$NOTIFY_URL" >/dev/null 2>&1 || true; }
@@ -503,6 +505,9 @@ run_target_group() {
     wait "${pids[$idx]}"; rc=$?
     gentry="${group_fns[$idx]}"; gpkg="${gentry%%|*}"; gfn="${gentry##*|}"
     d="$(find . -type d -path "*/testdata/fuzz/$gfn" 2>/dev/null | head -1)"
+    if is_signal_death "$rc"; then
+      log "$gfn ($gpkg): process died by $(classify_exit "$rc" | cut -d: -f3) (exit $rc) — OS-level kill, not a Go panic. Likely a crash reached across a cgo boundary, or an OOM kill."
+    fi
     if [ -n "$d" ] && [ -n "$(ls -A "$d" 2>/dev/null)" ]; then
       if [ "${REVERIFY_CRASH:-on}" = on ] && ! reproducer_reverifies "$gfn" "$gpkg"; then
         log "$gfn: reproducer did NOT re-fail on ${REVERIFY_RUNS:-1}x replay — transient worker death, not alerting (local copy kept in $FINDINGS_DIR/$gfn)"
@@ -510,6 +515,8 @@ run_target_group() {
       else
         handle_crash "$gfn" "$gpkg" "$rc"
       fi
+    elif is_signal_death "$rc"; then
+      report_signal_death "$gfn" "$gpkg" "$rc"
     elif [ "$rc" -ne 0 ]; then
       report_nonrepro_exit "$gfn" "$rc" "${offs[$idx]:-0}"
     fi
@@ -547,6 +554,20 @@ report_nonrepro_exit() {
   else
     log "$fn exited $rc with no reproducer — infra/timeout, logged not alerted"
   fi
+}
+
+# report_signal_death <fn> <pkg> <rc>: go test -fuzz was killed outright by a signal and left no
+# testdata/fuzz reproducer. Unlike report_nonrepro_exit's seed-corpus-or-silent-infra split, this
+# is never downgraded to silent — an OS-level kill (not a Go panic) with nothing saved is the one
+# case where the triggering input can be lost entirely if no one looks at this run. Detect-only:
+# this does NOT bisect the corpus to find which input caused it (see lib/exit-classify.sh's header
+# for why not — that would mean one subprocess per fuzz execution, the opposite of what makes
+# go test -fuzz fast).
+report_signal_death() {
+  local fn="$1" pkg="$2" rc="$3" cls name
+  cls="$(classify_exit "$rc")"; name="${cls##*:}"
+  log "$fn ($pkg): KILLED BY $name (exit $rc) with NO testdata/fuzz reproducer saved — OS-level death, not a Go panic; likely a cgo-boundary crash or an OOM kill. The triggering input may be gone; see $LOG_DIR/${fn}.log."
+  notify "$(fuzz_report_msg "signal-death" "$fn" "$pkg" "" "killed by $name (exit $rc), no reproducer saved")"
 }
 
 # stall_summary <fn> -> after a slice, summarise the freezes the target's process saw
