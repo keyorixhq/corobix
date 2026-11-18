@@ -13,9 +13,9 @@ new script. See the design rationale and the "when to reach for something
 heavier" triggers in the Keyorix project doc
 `claude/2026-09-13-fuzzing-tooling-decisions.md`.
 
-Findings this runner has produced in open-source dependencies, by severity
-and category, with links to the ones already publicly disclosed: see
-[`STATS.md`](STATS.md) (periodically regenerated from an internal registry).
+<!-- STATS:BEGIN (auto-updated by registry/gen_public_stats.py — don't hand-edit) -->
+**So far: 9 vulnerabilities + 53 other defects found across 34 open-source Go libraries** via continuous fuzzing — see [`STATS.md`](STATS.md) for the breakdown by severity and category, and links to the ones already publicly disclosed. Regenerated periodically from an internal registry.
+<!-- STATS:END -->
 
 ## Why native `go test -fuzz`
 
