@@ -1,5 +1,5 @@
 [Unit]
-Description=DashDiag continuous fuzzer (fuzz-harness runner)
+Description=DashDiag continuous fuzzer (corobix runner)
 After=network-online.target
 Wants=network-online.target
 
@@ -11,8 +11,8 @@ Environment=HOME=/home/andrei
 Environment=PATH=/snap/go/current/bin:/usr/bin:/bin
 Environment=GOPATH=/home/andrei/go
 # Uses the shared runner copy; its config is $SCRIPT_DIR/fuzz.conf =
-# /home/andrei/proj/fuzz-harness/fuzz.conf (the DashDiag conf on this box).
-ExecStart=/home/andrei/proj/fuzz-harness/fuzz-runner.sh
+# /home/andrei/proj/corobix/fuzz.conf (the DashDiag conf on this box).
+ExecStart=/home/andrei/proj/corobix/fuzz-runner.sh
 Restart=on-failure
 RestartSec=30
 # Shared box (also runs libs-extra-fuzz); 3000M each keeps the pair under RAM.

@@ -1,4 +1,4 @@
-# vCD rig migration onto fuzz-harness
+# vCD rig migration onto corobix
 
 Migrating the two live vCD fuzz rigs from their bespoke runners onto the
 universal `fuzz-runner.sh`. Prepared 2026-09-13.
@@ -10,7 +10,7 @@ universal `fuzz-runner.sh`. Prepared 2026-09-13.
 
 ## Validation done (non-destructive)
 
-- `fuzz-runner.sh` deployed to `/home/andrei/proj/fuzz-harness/` on both boxes
+- `fuzz-runner.sh` deployed to `/home/andrei/proj/corobix/` on both boxes
   (sha256 matches the committed runner), plus a box-local `fuzz.conf` beside it.
 - **dashdiag parity: IDENTICAL** — universal `discover()` finds the same 55
   targets as dashdiag's own `scripts/fuzz-discover.sh all`.

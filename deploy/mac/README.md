@@ -33,7 +33,7 @@ pass: list (fixed hosts file) -> hash on host -> rsync -> hash on Mac == host ha
 
 ## Install (Andrei, once; the sandbox session could not run launchd)
 ```sh
-cd <this checkout of fuzz-harness>
+cd <this checkout of corobix>
 scripts/check.sh                       # or: bats tests/crasher-pull.bats tests/crasher-pull-redproof.bats
 
 # 1. ssh: aliases vcd-keyorix-fuzz and vcd-dashdiag-fuzz must work non-interactively

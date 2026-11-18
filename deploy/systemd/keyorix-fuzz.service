@@ -1,5 +1,5 @@
 [Unit]
-Description=Keyorix continuous fuzz rotation (fuzz-harness runner)
+Description=Keyorix continuous fuzz rotation (corobix runner)
 After=network-online.target
 Wants=network-online.target
 
@@ -15,8 +15,8 @@ Environment=GOPATH=/home/andrei/go
 EnvironmentFile=-/etc/keyorix-fuzz/config.env
 # The runner finds its config at $FUZZ_CONF, else $SCRIPT_DIR/fuzz.conf (the
 # fuzz.conf beside this runner copy). Keyorix's fuzz.conf is at
-# /home/andrei/proj/fuzz-harness/fuzz.conf.
-ExecStart=/home/andrei/proj/fuzz-harness/fuzz-runner.sh
+# /home/andrei/proj/corobix/fuzz.conf.
+ExecStart=/home/andrei/proj/corobix/fuzz-runner.sh
 Restart=always
 RestartSec=30
 Nice=10

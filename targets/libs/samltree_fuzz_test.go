@@ -19,7 +19,7 @@
 //     judgment — same sound invariant, deeper reach.
 //
 // Depth-vs-byte-level comparison: see targets/README.md addendum / the
-// fuzz-harness M9 report entry for the measured corpus-growth comparison
+// corobix M9 report entry for the measured corpus-growth comparison
 // against FuzzSAMLParseXMLResponse over an identical time budget.
 package libsfuzz
 

@@ -59,5 +59,5 @@ Why this matters before you fuzz (or ship) it:
 If you can't remove it: any fuzz target that reaches one of the packages
 above should run isolated (one process per input, so a C-side crash can't
 take the whole fuzz run or its corpus with it) rather than fuzzed the normal
-way -- fuzz-harness does not yet default to this automatically.
+way -- corobix does not yet default to this automatically.
 EOF

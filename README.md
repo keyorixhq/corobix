@@ -1,4 +1,4 @@
-# fuzz-harness
+# corobix
 
 A thin, universal continuous-fuzz **rotation runner** for Go projects using the
 native fuzzing engine (`go test -fuzz`). One `fuzz-runner.sh` + one `fuzz.conf`

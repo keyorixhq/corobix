@@ -2,9 +2,9 @@
 # deploy.sh — one-command, git-stamped, verified deploy of THIS checkout's
 # fuzz-runner.sh to a fuzz rig (or all of them).
 #
-# WHY push-from-here and not git-pull-on-the-rig: fuzz-harness is private, and
+# WHY push-from-here and not git-pull-on-the-rig: corobix is private, and
 # the rigs only hold a deploy key scoped to the corpus repo — giving each rig a
-# fuzz-harness read credential is more attack surface for no real gain. This runs
+# corobix read credential is more attack surface for no real gain. This runs
 # from a checkout that already has repo access (your dev box), pushes the runner
 # over ssh, and stamps the exact commit on the rig (DEPLOYED_FROM.txt) so what is
 # running is always auditable. Human-gated: you run it, deliberately, per change.
@@ -25,8 +25,8 @@ cd "$(dirname "$0")/.."   # repo root
 RIGS_KEYS=(keyorix dashdiag libs-extra libs)
 rig_spec() {   # rig -> "ssh_host|runner_dir|conf_path"
   case "$1" in
-    keyorix)    echo "vcd-keyorix-fuzz|/home/andrei/proj/fuzz-harness|/home/andrei/proj/fuzz-harness/fuzz.conf" ;;
-    dashdiag)   echo "vcd-dashdiag-fuzz|/home/andrei/proj/fuzz-harness|/home/andrei/proj/fuzz-harness/fuzz.conf" ;;
+    keyorix)    echo "vcd-keyorix-fuzz|/home/andrei/proj/corobix|/home/andrei/proj/corobix/fuzz.conf" ;;
+    dashdiag)   echo "vcd-dashdiag-fuzz|/home/andrei/proj/corobix|/home/andrei/proj/corobix/fuzz.conf" ;;
     libs-extra) echo "vcd-dashdiag-fuzz|/home/andrei/proj/libs-extra-fuzz|/home/andrei/proj/libs-extra-fuzz/fuzz.conf" ;;
     libs)       echo "pve01|/root/libs-fuzz|/root/libs-fuzz/fuzz.conf" ;;
     *) return 1 ;;

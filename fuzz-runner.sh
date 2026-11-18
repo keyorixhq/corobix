@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # fuzz-runner.sh — universal continuous-fuzz rotation runner (native go test -fuzz).
 # Config: fuzz.conf beside this script, or $FUZZ_CONF. See README.md and the
-# Keyorix project doc claude/2026-09-13-universal-fuzz-harness-spec.md.
+# Keyorix project doc claude/2026-09-13-universal-corobix-spec.md.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

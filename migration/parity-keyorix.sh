@@ -4,7 +4,7 @@ set -uo pipefail
 export PATH=/snap/bin:$PATH
 export FUZZ_RUNNER_LIB=1
 # shellcheck disable=SC1091
-source /home/andrei/proj/fuzz-harness/fuzz-runner.sh
+source /home/andrei/proj/corobix/fuzz-runner.sh
 cd /opt/keyorix-fuzz/keyorix || exit 1
 echo "===DISCOVER==="
 discover | sort > /tmp/disc.txt

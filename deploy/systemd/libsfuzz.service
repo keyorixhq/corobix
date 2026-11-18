@@ -1,5 +1,5 @@
 [Unit]
-Description=Third-party libs fuzz rotation (fuzz-harness runner)
+Description=Third-party libs fuzz rotation (corobix runner)
 After=network.target
 
 [Service]

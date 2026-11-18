@@ -7,9 +7,9 @@ file here (differences below are deliberate per-box facts, not architecture).
 
 | Service | Box | User | Runner copy | Conf | Caps |
 |---|---|---|---|---|---|
-| `keyorix-fuzz` | vcd-keyorix-fuzz | andrei | `~/proj/fuzz-harness/fuzz-runner.sh` | `$SCRIPT_DIR/fuzz.conf` | CPUQuota 700%, MemoryMax 5500M |
-| `dashdiag-fuzz` | vcd-dashdiag-fuzz | andrei | `~/proj/fuzz-harness/fuzz-runner.sh` | `$SCRIPT_DIR/fuzz.conf` | MemoryMax 3000M |
-| `libs-extra-fuzz` | vcd-dashdiag-fuzz | andrei | `~/proj/fuzz-harness/fuzz-runner.sh` | `FUZZ_CONF=~/proj/libs-extra-fuzz/fuzz.conf` | MemoryMax 3000M |
+| `keyorix-fuzz` | vcd-keyorix-fuzz | andrei | `~/proj/corobix/fuzz-runner.sh` | `$SCRIPT_DIR/fuzz.conf` | CPUQuota 700%, MemoryMax 5500M |
+| `dashdiag-fuzz` | vcd-dashdiag-fuzz | andrei | `~/proj/corobix/fuzz-runner.sh` | `$SCRIPT_DIR/fuzz.conf` | MemoryMax 3000M |
+| `libs-extra-fuzz` | vcd-dashdiag-fuzz | andrei | `~/proj/corobix/fuzz-runner.sh` | `FUZZ_CONF=~/proj/libs-extra-fuzz/fuzz.conf` | MemoryMax 3000M |
 | `libsfuzz` | pve01 | root | `/root/libs-fuzz/fuzz-runner.sh` | `$SCRIPT_DIR/fuzz.conf` | MemoryMax 12G |
 
 Deliberate per-box differences: user (root on pve01), Go paths, `MemoryMax`

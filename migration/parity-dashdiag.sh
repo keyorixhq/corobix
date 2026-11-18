@@ -5,7 +5,7 @@ set -uo pipefail
 export PATH=/snap/bin:$PATH
 export FUZZ_RUNNER_LIB=1
 # shellcheck disable=SC1091
-source /home/andrei/proj/fuzz-harness/fuzz-runner.sh
+source /home/andrei/proj/corobix/fuzz-runner.sh
 cd /home/andrei/proj/dashdiag || exit 1
 echo "===DISCOVER (universal: pkg|Func)==="
 discover | awk -F'|' '{n=split($1,a,"/"); print a[n]"|"$2}' | sort > /tmp/d_uni.txt

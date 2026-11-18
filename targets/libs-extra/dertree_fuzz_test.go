@@ -22,7 +22,7 @@
 //     deadline invariant FuzzTimestampParseResponse (targets/libs-extra's
 //     own committed digitorus target) already asserts — no new oracle.
 //
-// Depth-vs-byte-level comparison: see the fuzz-harness M9 report entry.
+// Depth-vs-byte-level comparison: see the corobix M9 report entry.
 package libsextra
 
 import (

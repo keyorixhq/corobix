@@ -13,7 +13,7 @@ Environment=GOPATH=/home/andrei/go
 # Shares the runner copy with dashdiag-fuzz on this box, so FUZZ_CONF is set
 # explicitly to this rig's own conf (SCRIPT_DIR/fuzz.conf would be dashdiag's).
 Environment=FUZZ_CONF=/home/andrei/proj/libs-extra-fuzz/fuzz.conf
-ExecStart=/home/andrei/proj/fuzz-harness/fuzz-runner.sh
+ExecStart=/home/andrei/proj/corobix/fuzz-runner.sh
 Restart=on-failure
 RestartSec=30
 MemoryMax=3000M

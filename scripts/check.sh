@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Local pre-PR gate for fuzz-harness. Hosted CI is intentionally disabled for this
+# Local pre-PR gate for corobix. Hosted CI is intentionally disabled for this
 # repo (the .github/workflows/ci.yml workflow was removed) — run this before every
 # PR. Mirrors what CI ran (shellcheck + bats) and adds go vet + govulncheck on the
 # target modules.

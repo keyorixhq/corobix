@@ -3,7 +3,7 @@
 #
 # Runs entirely on the bench box (pve01 CT 240 / keyorix-bench), against
 # /opt/bench/base and /opt/bench/after (pinned keyorix checkouts, already
-# present) plus /opt/bench/fuzz-harness and /opt/bench/fuzz-corpus (deployed
+# present) plus /opt/bench/corobix and /opt/bench/fuzz-corpus (deployed
 # separately via `rsync -a --exclude=.git`, NOT by this script — this box
 # has no GitHub credentials, so cloning from here isn't an option).
 #
@@ -50,7 +50,7 @@ command -v "$GO_BIN" >/dev/null 2>&1 || GO_BIN="$(command -v go || true)"
 
 BASE_DIR="${BASE_DIR:-/opt/bench/base}"
 AFTER_DIR="${AFTER_DIR:-/opt/bench/after}"
-HARNESS_DIR="${HARNESS_DIR:-/opt/bench/fuzz-harness}"
+HARNESS_DIR="${HARNESS_DIR:-/opt/bench/corobix}"
 CORPUS_DIR="${CORPUS_DIR:-/opt/bench/fuzz-corpus}"
 SCRATCH="${SCRATCH:-/opt/bench/work}"
 GO_TOOLCHAIN_VERSION="${GO_TOOLCHAIN_VERSION:-1.27.1}" # matches go.work `go 1.27` + confirmed installed version
@@ -71,7 +71,7 @@ JSON_DIR="$RESULT_DIR/json"
 # scratch, and 12 setup attempts alone reached 20GB, filling the CT's 30GB
 # disk to 100% and failing every subsequent `git clone` with ENOSPC. Only
 # the FUZZ cache (-test.fuzzcachedir, just corpus files) needs per-trial
-# isolation for correctness; build cache never did. Matches fuzz-harness's
+# isolation for correctness; build cache never did. Matches corobix's
 # own prior art (bench/portable-rig-benchmark:bench/fuzz-bench.sh) which
 # shares one GOCACHE across a whole run for exactly this reason.
 SHARED_GOCACHE="$SCRATCH/gocache-shared"
@@ -254,7 +254,7 @@ target_pkg_for() {
 	echo "$pkg"
 }
 
-# mapsize_of_bin / pkg_map_bytes_measured — ported from fuzz-harness's own
+# mapsize_of_bin / pkg_map_bytes_measured — ported from corobix's own
 # fuzz-runner.sh (mapsize_of_bin/pkg_map_bytes, merged into main 2026-09-23):
 # the REAL coverage-map size is the distance between the linker symbols
 # internal/fuzz._counters and internal/fuzz._ecounters in an INSTRUMENTED
@@ -296,7 +296,7 @@ pkg_map_bytes_measured() {
 # ---------------------------------------------------------------------------
 # revert_fix — revert every file a fix commit MODIFIED (not ADDED), so the
 # fix's own new regression-test/fuzz file stays in place and the target still
-# exists. Ported from fuzz-harness's own prior art
+# exists. Ported from corobix's own prior art
 # (bench/portable-rig-benchmark:bench/fuzz-bench.sh ttf_revert_keyorix_commit)
 # — a failed per-file reverse-apply is recorded, never silently dropped.
 # ---------------------------------------------------------------------------
