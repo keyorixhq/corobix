@@ -1,8 +1,8 @@
 # Findings
 
-*Auto-generated from an internal findings registry by `registry/gen_public_stats.py` — don't hand-edit. Last regenerated 2026-11-18.*
+*Auto-generated from an internal findings registry by `registry/gen_public_stats.py` — don't hand-edit. Last regenerated 18 November 2026.*
 
-As of 2026-11-18, continuous fuzzing runs built on this runner have produced **62 confirmed findings** across **34 open-source Go dependencies** — crypto/auth libraries, cloud SDKs, database drivers, parsers, and more.
+As of 18 November 2026, continuous fuzzing runs built on this runner have produced **62 confirmed findings** across **34 open-source Go dependencies** — crypto/auth libraries, cloud SDKs, database drivers, parsers, and more.
 
 **Scope note:** these numbers cover fuzzing of third-party/open-source dependencies only. Findings inside first-party product code are tracked separately in a private registry and are not included here.
 
