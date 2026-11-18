@@ -96,6 +96,15 @@ for T in "${TL[@]}"; do
         cls="$(classify_exit "$rc")"; name="${cls##*:}"
         log "KILLED target=$T by $name (exit $rc), no reproducer saved -- OS-level death, not a Go panic; likely a cgo-boundary crash or an OOM kill. The triggering input may be gone (see $LANE/logs/$T.last.log)."
         notify "Fuzz lane signal death: $T" "$(fuzz_report_msg signal-death "$T" "$PKG" "" "killed by $name (exit $rc), no reproducer saved")" high
+      elif grep -q 'no crash will be recorded' "$LANE/logs/$T.last.log" 2>/dev/null; then
+        # go test -fuzz's own coordinator declined to save a reproducer: it treats the worker's
+        # signal (e.g. SIGKILL from an OOM kill) as probably not caused by the input itself (see
+        # internal/fuzz/worker.go's isCrashSignal). rc stays a clean non-signal exit here -- go's
+        # test driver absorbed it -- so is_signal_death above never catches this case; this is
+        # the one that actually matters for "OOM/cgo crash with nothing saved".
+        wkmsg=$(grep -m1 'no crash will be recorded' "$LANE/logs/$T.last.log" | sed -E 's/^[[:space:]]+//' | cut -c1-300)
+        log "target=$T: ${wkmsg:-no crash will be recorded} -- the triggering input may be gone (see $LANE/logs/$T.last.log)."
+        notify "Fuzz lane signal death: $T" "$(fuzz_report_msg signal-death "$T" "$PKG" "" "${wkmsg:-no crash will be recorded}; no reproducer saved")" high
       else log "run failed without crasher target=$T rc=$rc (see $LANE/logs/$T.last.log)"; notify "Fuzz lane problem: $T" "$HOST rc=$rc without a crasher; see $LANE/logs/$T.last.log"; fi
       break
     fi

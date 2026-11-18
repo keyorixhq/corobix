@@ -479,7 +479,7 @@ pick_group_size() {
 # resumes at the correct next position exactly as a kill mid-single-target
 # slice always has.
 run_target_group() {
-  local i="$1" gsize="$2" gi gentry gpkg gfn gdur gmt gmbytes d idx rc
+  local i="$1" gsize="$2" gi gentry gpkg gfn gdur gmt gmbytes d idx rc wkmsg
   local -a group_fns=() pids=() offs=()
   for (( gi = 0; gi < gsize; gi++ )); do
     group_fns+=("${TARGETS[$((i + gi))]}")
@@ -517,6 +517,8 @@ run_target_group() {
       fi
     elif is_signal_death "$rc"; then
       report_signal_death "$gfn" "$gpkg" "$rc"
+    elif wkmsg="$(worker_killed_no_crash_message "$gfn" "${offs[$idx]:-0}")"; then
+      report_worker_killed_no_crash "$gfn" "$gpkg" "$wkmsg"
     elif [ "$rc" -ne 0 ]; then
       report_nonrepro_exit "$gfn" "$rc" "${offs[$idx]:-0}"
     fi
@@ -568,6 +570,37 @@ report_signal_death() {
   cls="$(classify_exit "$rc")"; name="${cls##*:}"
   log "$fn ($pkg): KILLED BY $name (exit $rc) with NO testdata/fuzz reproducer saved — OS-level death, not a Go panic; likely a cgo-boundary crash or an OOM kill. The triggering input may be gone; see $LOG_DIR/${fn}.log."
   notify "$(fuzz_report_msg "signal-death" "$fn" "$pkg" "" "killed by $name (exit $rc), no reproducer saved")"
+}
+
+# worker_killed_no_crash_message <fn> <offset> -> prints Go's own explanation line and returns 0
+# when the slice output appended to $LOG_DIR/<fn>.log after byte <offset> shows internal/fuzz's
+# own "no crash will be recorded" message. go test -fuzz's coordinator deliberately declines to
+# save a reproducer when a worker is killed by a signal it doesn't consider crash-indicative --
+# SIGKILL, SIGHUP -- because the kernel OOM killer or an external supervisor, not the fuzzed
+# input, is the likely cause (internal/fuzz/worker.go's isCrashSignal: SIGILL/SIGTRAP/SIGABRT/
+# SIGBUS/SIGFPE/SIGSEGV/SIGPIPE DO get a reproducer saved as an ordinary crash; SIGKILL/SIGHUP/
+# anything else does NOT). This is the real version of the gap report_signal_death only partly
+# covers: under NORMAL (non-FUZZ_PREBUILT) go test -fuzz, the go command's own test driver
+# absorbs a worker's SIGKILL into a clean rc=1 at the shell level -- is_signal_death never sees
+# rc>128 for this -- so this is the one place a genuine OOM-killed or externally-killed cgo-
+# boundary worker is actually caught instead of falling through to report_nonrepro_exit's silent
+# "infra/timeout, logged not alerted" branch. Only this slice's output is examined, same
+# convention as seed_failure_message.
+worker_killed_no_crash_message() {
+  local fn="$1" off="${2:-0}" out
+  out="$(tail -c +"$((off + 1))" "$LOG_DIR/${fn}.log" 2>/dev/null)"
+  printf '%s\n' "$out" | grep -q 'no crash will be recorded' || return 1
+  printf '%s\n' "$out" | grep -m1 'no crash will be recorded' | sed -E 's/^[[:space:]]+//' | cut -c1-300
+  return 0
+}
+
+# report_worker_killed_no_crash <fn> <pkg> <msg>: see worker_killed_no_crash_message above.
+# Never downgraded to silent, for the same reason report_signal_death isn't: the triggering
+# input can be gone entirely, and this is specifically the case Go itself chose not to keep it.
+report_worker_killed_no_crash() {
+  local fn="$1" pkg="$2" msg="$3"
+  log "$fn ($pkg): $msg — go's own fuzz coordinator declined to save a reproducer (not treated as crash-indicative, e.g. SIGKILL/SIGHUP); likely an OOM kill or external supervisor. The triggering input may be gone; see $LOG_DIR/${fn}.log."
+  notify "$(fuzz_report_msg "signal-death" "$fn" "$pkg" "" "$msg; no reproducer saved")"
 }
 
 # stall_summary <fn> -> after a slice, summarise the freezes the target's process saw
