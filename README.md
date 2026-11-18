@@ -31,8 +31,12 @@ reach for something heavier" triggers in the Keyorix project doc
 The rotation runner above solves "keep fuzzing running without babysitting
 it." It doesn't solve the harder problem most teams actually have: a SAST
 scanner (CodeQL, Semgrep) hands back hundreds of alerts with no signal on
-which ones are real, reachable, or worth anyone's time. The plan is to close
-that loop end to end:
+which ones are real, reachable, or worth anyone's time — and today, closing
+that gap means running SAST, a DAST scanner (Nuclei, ZAP) and a mutation
+tester (`gomu`) as three unrelated standalone tools, by hand, with nothing
+tying their outputs to each other. Folding them into one pipeline — one
+combine, not three separate tools someone has to wire together themselves —
+is a firm commitment for corobix, not a maybe:
 
 - **SAST-guided target selection** — turn a SAST alert's sink into an
   automatically generated or selected fuzz target, instead of fuzzing a
@@ -56,12 +60,13 @@ that loop end to end:
   loop, and reachability reconciliation across tools that don't natively
   talk to each other.
 
-The goal: push a button, get a confirmed, reproduced bug — not a raw alert to
-triage yourself. **None of the SAST/DAST/mutation integration exists in this
-repo yet.** `fuzz-runner.sh`, documented below, is the one piece that's
-actually built and running. Treat this section as direction, not a feature
-list — check the repo's activity or releases rather than assuming any of it
-is wired in.
+The goal: push a button, get a confirmed, reproduced bug — not three tools'
+worth of output to reconcile by hand. **None of that integration exists in
+this repo yet** — SAST, Nuclei/ZAP and `gomu` remain separate tools you'd run
+separately today. `fuzz-runner.sh`, documented below, is the one piece that's
+actually built and running. Treat this section as a committed direction, not
+a feature list — check the repo's activity or releases rather than assuming
+any of it is wired in.
 
 ## Why native `go test -fuzz`
 
