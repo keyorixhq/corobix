@@ -493,7 +493,10 @@ run_target_group() {
     fi
     [ "$gsize" -eq 1 ] && log "=== fuzzing $gfn ($gpkg) for $gdur${gmt:+ minimizetime=$gmt (map ${gmbytes}B)} ==="
     offs+=("$(wc -c < "$LOG_DIR/${gfn}.log" 2>/dev/null || echo 0)")
-    ( run_slice "$gpkg" "$gfn" "$gdur" "$gmt" >>"$LOG_DIR/${gfn}.log" 2>&1 ) &
+    # Freeze instrumentation: fuzzutil's stall monitor appends one line per detected
+    # process freeze to this file (see stall_summary). Truncated per slice.
+    mkdir -p "$LOG_DIR/stalls"; : >"$LOG_DIR/stalls/${gfn}.stalls"
+    ( FUZZ_STALL_LOG="$LOG_DIR/stalls/${gfn}.stalls" run_slice "$gpkg" "$gfn" "$gdur" "$gmt" >>"$LOG_DIR/${gfn}.log" 2>&1 ) &
     pids+=("$!")
   done
   for idx in "${!pids[@]}"; do
@@ -511,6 +514,7 @@ run_target_group() {
       report_nonrepro_exit "$gfn" "$rc" "${offs[$idx]:-0}"
     fi
     record_saturation "$gfn"
+    stall_summary "$gfn"
   done
 }
 
@@ -543,6 +547,27 @@ report_nonrepro_exit() {
   else
     log "$fn exited $rc with no reproducer — infra/timeout, logged not alerted"
   fi
+}
+
+# stall_summary <fn> -> after a slice, summarise the freezes the target's process saw
+# ($LOG_DIR/stalls/<fn>.stalls, lines "<ts> pid=N exe=X frozen=<go duration>"): one log line
+# and one row in $LOG_DIR/stalls.tsv (ts fn count max_s total_s) so freeze frequency per box
+# can be aggregated. Silent when there were none. Never fails the run.
+stall_summary() {
+  local f="$LOG_DIR/stalls/$1.stalls" row
+  [ -s "$f" ] || return 0
+  row="$(grep -ao 'frozen=[0-9hmsµ.]*' "$f" | awk -v fn="$1" '
+    function secs(d,   h,m,s,ms,t) { t=0
+      if (match(d,/[0-9.]+h/))  { t+=substr(d,RSTART,RLENGTH-1)*3600 }
+      if (match(d,/[0-9.]+m[^s]/)) { t+=substr(d,RSTART,RLENGTH-2)*60 }
+      if (match(d,/[0-9.]+ms/)) { t+=substr(d,RSTART,RLENGTH-2)/1000; return t }
+      if (match(d,/[0-9.]+s/))  { t+=substr(d,RSTART,RLENGTH-1) }
+      return t }
+    { sub(/^frozen=/,""); v=secs($0); n++; tot+=v; if (v>mx) mx=v }
+    END { if (n) printf "%s\t%d\t%.1f\t%.1f", fn, n, mx, tot }')" || return 0
+  [ -n "$row" ] || return 0
+  log "stalls: ${row//$'\t'/ } (fn count max_s total_s)"
+  printf '%s\t%s\n' "$(date -u +%FT%TZ)" "$row" >>"$LOG_DIR/stalls.tsv" 2>/dev/null || true
 }
 
 # run_slice <pkg> <fn> <dur> -> exactly today's `go test ... -fuzz=...`

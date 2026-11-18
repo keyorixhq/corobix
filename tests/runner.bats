@@ -637,3 +637,26 @@ _fake_nm() {   # go tool nm output with the two counter symbols 0x1555 = 5461 ap
   grep -q '^quarantined FuzzA$' "$BATS_TEST_TMPDIR/calls"
   ! grep -q 'SHOULD NOT' "$BATS_TEST_TMPDIR/calls"
 }
+
+# --- stall_summary -----------------------------------------------------------
+
+@test "stall_summary is silent when the slice saw no freezes" {
+  LOG_DIR="$BATS_TEST_TMPDIR"; mkdir -p "$LOG_DIR/stalls"; : >"$LOG_DIR/stalls/FuzzA.stalls"
+  run stall_summary FuzzA
+  [ "$status" -eq 0 ]
+  [ ! -e "$LOG_DIR/stalls.tsv" ]
+}
+
+@test "stall_summary reports count, max and total across go duration formats" {
+  LOG_DIR="$BATS_TEST_TMPDIR"; mkdir -p "$LOG_DIR/stalls"
+  cat >"$LOG_DIR/stalls/FuzzA.stalls" <<'EOF'
+2026-11-18T00:00:01Z pid=1 exe=a.test frozen=700ms
+2026-11-18T00:00:09Z pid=1 exe=a.test frozen=12.5s
+2026-11-18T00:01:09Z pid=2 exe=a.test frozen=1m2s
+EOF
+  run stall_summary FuzzA
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"stalls: FuzzA 3 62.0 75.2"* ]]
+  run cut -f2-5 "$LOG_DIR/stalls.tsv"
+  [ "$output" = "$(printf 'FuzzA\t3\t62.0\t75.2')" ]
+}
