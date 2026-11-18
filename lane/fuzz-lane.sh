@@ -12,6 +12,8 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/fuzz-report.sh
 source "$SCRIPT_DIR/../lib/fuzz-report.sh"
+# shellcheck source=../lib/exit-classify.sh
+source "$SCRIPT_DIR/../lib/exit-classify.sh"
 export PATH=$PATH:/usr/local/go/bin:/snap/bin
 LANE=$HOME/lane; CFG=$HOME/.config/fuzz-lane; HOST=$(hostname)
 REPO=keyorixhq/fuzz-corpus
@@ -90,6 +92,10 @@ for T in "${TL[@]}"; do
       pkgdir=$(go list -f '{{.Dir}}' "$PKG" 2>/dev/null)
       git status --porcelain --untracked-files=all -- "$pkgdir/testdata/fuzz/$T" | awk '{print $2}' | sed "s#^#$SRC/#" > "$LANE/state/new.list"
       if [ -s "$LANE/state/new.list" ]; then FOUND=$((FOUND+1)); report "$T" "$LANE/state/new.list" "$COMMIT" "$REF" "$PKG"; git clean -fdq -- "$pkgdir/testdata/fuzz/$T"
+      elif is_signal_death "$rc"; then
+        cls="$(classify_exit "$rc")"; name="${cls##*:}"
+        log "KILLED target=$T by $name (exit $rc), no reproducer saved -- OS-level death, not a Go panic; likely a cgo-boundary crash or an OOM kill. The triggering input may be gone (see $LANE/logs/$T.last.log)."
+        notify "Fuzz lane signal death: $T" "$(fuzz_report_msg signal-death "$T" "$PKG" "" "killed by $name (exit $rc), no reproducer saved")" high
       else log "run failed without crasher target=$T rc=$rc (see $LANE/logs/$T.last.log)"; notify "Fuzz lane problem: $T" "$HOST rc=$rc without a crasher; see $LANE/logs/$T.last.log"; fi
       break
     fi
