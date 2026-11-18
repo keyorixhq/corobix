@@ -143,20 +143,22 @@ Hosted CI is disabled for this repo — run the checks locally before every PR:
 ./scripts/check.sh    # shellcheck fuzz-runner.sh + bats tests/ + go vet + govulncheck targets/*
 ```
 
-**No PR check runs any of this automatically, and no branch protection enforces it either**
-(this repo is private, on the org's free plan — GitHub's branch-protection API itself 403s here
-with "Upgrade to GitHub Pro or make this repository public"). A merged PR being green means
+**No PR check runs any of this automatically, and no branch protection enforces it yet**
+(branch protection was 403-blocked while this repo was private on the org's free plan —
+"Upgrade to GitHub Pro or make this repository public" — and it's now public, so that's no
+longer the blocker; protection just hasn't been configured yet). A merged PR being green means
 nothing here was checked; it means nothing ran at all. Run `scripts/check.sh` yourself before
 every PR, and don't infer "checked" from a PR's status.
 
-Why there's no hosted workflow: public repos in this org (keyorix, dashdiag, keyorix-web) get
-unlimited free Actions minutes on GitHub-hosted runners regardless of plan; this repo is
-*private*, and the org has no paid Actions allowance for private repos on the free plan, so a
-`ci.yml` here billing-blocked every run instead of executing it (confirmed: zero Actions usage
-ever recorded for this repo in the org's billing history, and `actions/permissions` currently
-reports `enabled: false`). Re-enabling it would need either making this repo public or the org
-taking on a paid plan / spending limit for private-repo Actions minutes — both are calls for a
-human to make, not something to flip as a side effect of adding one more check.
+Why there's no hosted workflow (historical note): this repo was private until
+2026-11-18, and the org had no paid Actions allowance for private repos on
+the free plan, so a `ci.yml` here would have billing-blocked every run
+instead of executing it (confirmed at the time: zero Actions usage ever
+recorded in the org's billing history, and `actions/permissions` reported
+`enabled: false`). The repo is now **public**, which gets unlimited free
+Actions minutes on GitHub-hosted runners regardless of plan — the original
+blocker is gone. A `ci.yml` wiring up `scripts/check.sh` on push/PR hasn't
+been added yet; that's a deliberate next step, not an oversight.
 
 ## Layout
 
@@ -168,3 +170,7 @@ tests/runner.bats                  unit tests for the pure functions
 scripts/check.sh                   local pre-PR gate (shellcheck + bats + go vet + govulncheck)
 targets/{libs,libs-extra}/         standalone third-party-lib fuzz target modules
 ```
+
+## License
+
+Apache License 2.0 — see [`LICENSE`](LICENSE).
