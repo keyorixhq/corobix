@@ -844,6 +844,20 @@ handle_crash() { # $1=fn $2=pkg $3=rc ; called only when a real reproducer exist
       # PUBLIC GitHub issue as a repro POINTER — never the raw crashing input
       # (that stays local, and in the private CORPUS_REPO if configured), so
       # opening an issue on a public repo does not itself disclose the 0-day.
+      #
+      # Uses the REST API (`gh api`), never `gh issue create`/`gh issue list`:
+      # those go through gh's GraphQL path, which queries fields (e.g.
+      # repository.defaultBranchRef) outside what a fine-grained PAT scoped
+      # to just Issues: write grants — confirmed 2026-11-18, `gh issue create`
+      # failed outright with "Resource not accessible by personal access
+      # token" against the least-privilege token this mode is meant to run
+      # with. REST has no such requirement.
+      #
+      # De-duped by title + the "vcd-auto" label: a target that keeps
+      # crashing across rotations (same bug, new random input each time)
+      # gets ONE issue with a "seen again" comment per repeat, not a fresh
+      # issue every time — REVERIFY_CRASH only filters a single slice's
+      # flakiness, not repeats across later rotations.
       log "CRASH $fn ($pkg) rc=$rc — opening a GitHub issue (repro pointer; raw input kept local -> $dest)"
       if command -v gh >/dev/null; then
         # shellcheck disable=SC2016  # single-quoted printf FORMAT: %s are printf specifiers, backticks are literal markdown
@@ -852,13 +866,29 @@ handle_crash() { # $1=fn $2=pkg $3=rc ; called only when a real reproducer exist
         if [ "${ISSUE_INCLUDE_LOG:-0}" = "1" ]; then
           body="${body}"$'\n\nLog tail:\n\n```\n'"$(tail -n 20 "$LOG_DIR/${fn}.log" 2>/dev/null | tr -d '`')"$'\n```'
         fi
-        # ISSUE_REPO targets a specific repo; unset -> gh infers it from the module checkout.
-        if [ -n "${ISSUE_REPO:-}" ]; then
-          gh issue create --repo "$ISSUE_REPO" --title "fuzz(crash): $fn" --body "$body" >/dev/null 2>&1 \
-            || log "gh issue create failed (non-fatal) — reproducer kept local -> $dest"
+        # ISSUE_REPO targets a specific repo (REQUIRED for REST — unlike
+        # `gh issue create`, the REST endpoint can't infer it from the
+        # module checkout's remote). Falls back to parsing $GIT_REMOTE's
+        # URL (a local git command, not a GitHub API call, so it works
+        # regardless of token scope) only when ISSUE_REPO is unset.
+        issue_repo="${ISSUE_REPO:-$(git remote get-url "${GIT_REMOTE:-origin}" 2>/dev/null \
+          | sed -E 's#.*[:/]([^/]+/[^/.]+)(\.git)?$#\1#')}"
+        if [ -z "$issue_repo" ]; then
+          log "issue mode: could not determine ISSUE_REPO (set it explicitly) — reproducer kept local -> $dest"
         else
-          gh issue create --title "fuzz(crash): $fn" --body "$body" >/dev/null 2>&1 \
-            || log "gh issue create failed (non-fatal) — reproducer kept local -> $dest"
+          title="fuzz(crash): $fn"
+          existing="$(gh api "repos/$issue_repo/issues?state=all&labels=vcd-auto&per_page=100" \
+            --jq ".[] | select(.title == \"$title\") | .number" 2>/dev/null | head -1)"
+          if [ -n "$existing" ]; then
+            gh api -X POST "repos/$issue_repo/issues/$existing/comments" -f body="Seen again ($ts, rc=$rc).
+
+$body" >/dev/null 2>&1 \
+              || log "issue comment failed (non-fatal) on #$existing — reproducer kept local -> $dest"
+          else
+            gh api -X POST "repos/$issue_repo/issues" -f title="$title" -f body="$body" -f "labels[]=vcd-auto" \
+              >/dev/null 2>&1 \
+              || log "issue create failed (non-fatal) on $issue_repo — reproducer kept local -> $dest"
+          fi
         fi
       else
         log "gh not available — cannot open issue; reproducer kept local -> $dest"
