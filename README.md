@@ -13,7 +13,9 @@ new script. See the design rationale and the "when to reach for something
 heavier" triggers in the Keyorix project doc
 `claude/2026-09-13-fuzzing-tooling-decisions.md`.
 
-Fuzzing catches ledger (finds, lessons, disclosure history): `keyorixhq/fuzz-corpus` `docs/fuzzing-catches-ledger.md`.
+Findings this runner has produced in open-source dependencies, by severity
+and category, with links to the ones already publicly disclosed: see
+[`STATS.md`](STATS.md) (periodically regenerated from an internal registry).
 
 ## Why native `go test -fuzz`
 
