@@ -43,10 +43,11 @@ func withinDeadline(t *testing.T, fn func()) {
 	t.Helper()
 	done := make(chan struct{})
 	go func() { defer close(done); fn() }()
-	select {
-	case <-done:
-	case <-time.After(perInputDeadline):
-		t.Fatalf("input exceeded %s deadline — possible algorithmic-complexity DoS", perInputDeadline)
+	// Wait (stall.go, synced from shared/) gives a miss one more full budget when the
+	// process itself was frozen (GC/swap/host contention), so only a call still running
+	// after that is reported.
+	if _, ok, frozen := Wait(done, perInputDeadline); !ok {
+		t.Fatalf("input exceeded %s deadline (process frozen %s of it) — possible algorithmic-complexity DoS", perInputDeadline, frozen)
 	}
 }
 

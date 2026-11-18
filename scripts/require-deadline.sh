@@ -30,7 +30,7 @@ ROOT="${1:-targets}"
 # Canonical helper fingerprint. These lines must appear verbatim (budget is
 # whitespace-tolerant) in every module that owns a guarded target.
 CANON_SIG='func withinDeadline(t *testing.T, fn func()) {'
-CANON_AFTER='case <-time.After(perInputDeadline):'
+CANON_AFTER='Wait(done, perInputDeadline)'
 CANON_BUDGET_RE='^const[[:space:]]+perInputDeadline[[:space:]]*=[[:space:]]*2[[:space:]]*\*[[:space:]]*time\.Second[[:space:]]*$'
 
 if [ ! -d "$ROOT" ]; then
@@ -99,7 +99,7 @@ while IFS= read -r gomod; do
 			fail=1
 		fi
 		if ! grep -qsF -- "$CANON_AFTER" "$mod"/*_test.go; then
-			echo "  FAIL  helper — deadline select ('${CANON_AFTER}') not found"
+			echo "  FAIL  helper — freeze-aware wait ('${CANON_AFTER}') not found"
 			fail=1
 		fi
 		if ! grep -qsE -- "$CANON_BUDGET_RE" "$mod"/*_test.go; then
