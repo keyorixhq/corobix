@@ -75,6 +75,12 @@ deploy_one() {
     echo "    seeded $conf from examples/$rig.conf (rig had none)"
   fi
 
+  # The runner sources lib/*.sh at startup. Ship them BEFORE the runner is swapped in,
+  # otherwise a rig gets a runner whose helper functions do not exist (every crash
+  # notification then has an empty body, which ntfy shows as "triggered").
+  ssh "$host" mkdir -p "$dir/lib" || die "[$rig] mkdir lib failed"
+  scp -q lib/*.sh "$host:$dir/lib/" || die "[$rig] scp lib failed"
+
   scp -q fuzz-runner.sh "$host:$dir/.fuzz-runner.sh.new" || die "[$rig] scp failed"
 
   # Advisory-only helper the runner shells out to at startup if present (see

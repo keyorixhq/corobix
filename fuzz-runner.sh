@@ -5,13 +5,28 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Both helpers are required: a runner without them cannot classify exits or build
+# notification text. Refuse to start rather than run half-working (exit 78 = config error).
+for _lib in fuzz-report.sh exit-classify.sh; do
+  [ -r "$SCRIPT_DIR/lib/$_lib" ] || { echo "FATAL: $SCRIPT_DIR/lib/$_lib missing (deploy lib/ with the runner)" >&2; exit 78; }
+done
 # shellcheck source=lib/fuzz-report.sh
 source "$SCRIPT_DIR/lib/fuzz-report.sh"
 # shellcheck source=lib/exit-classify.sh
 source "$SCRIPT_DIR/lib/exit-classify.sh"
 
 log()   { echo "[$(date -u +%FT%TZ)] $*" | tee -a "${LOG_DIR:-/tmp}/rotation.log" >&2; }
-notify(){ [ -n "${NOTIFY_URL:-}" ] && curl -fsS -m 10 -d "$1" "$NOTIFY_URL" >/dev/null 2>&1 || true; }
+# notify <body>: an empty body would reach ntfy as the default text "triggered" with no
+# host or cause, so never send one; log it instead and send a message that names the host.
+notify(){
+  [ -n "${NOTIFY_URL:-}" ] || return 0
+  local body="$1"
+  if [ -z "${body//[[:space:]]/}" ]; then
+    body="$(hostname): fuzz-runner tried to send an empty notification (bug in the caller; see rotation.log)"
+    echo "[$(date -u +%FT%TZ)] notify: empty body replaced" >> "${LOG_DIR:-/tmp}/rotation.log"
+  fi
+  curl -fsS -m 10 -H "Title: fuzz-runner $(hostname)" -d "$body" "$NOTIFY_URL" >/dev/null 2>&1 || true
+}
 
 # dur_to_secs <godur> -> integer seconds for an h/m/s go-duration ("1h30m","15m",
 # "90s") or a bare integer (already seconds). Unparseable -> 0. (go test -fuzztime
