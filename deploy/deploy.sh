@@ -39,7 +39,8 @@ gate() {
   [ "${DEPLOY_SKIP_GATE:-0}" = 1 ] && { echo "deploy: gate SKIPPED (DEPLOY_SKIP_GATE=1)"; return 0; }
   echo "deploy: gate — shellcheck + bats"
   command -v shellcheck >/dev/null || die "shellcheck not found (install it, or DEPLOY_SKIP_GATE=1)"
-  shellcheck fuzz-runner.sh || die "shellcheck failed — refusing to deploy"
+  # -x: follow the sourced lib/*.sh helpers (#39 added them; without -x SC1091 fails the gate)
+  shellcheck -x fuzz-runner.sh || die "shellcheck failed — refusing to deploy"
   if command -v bats >/dev/null && [ -f tests/runner.bats ]; then
     bats tests/runner.bats >/dev/null || die "bats runner tests failed — refusing to deploy"
   else
