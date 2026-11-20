@@ -313,6 +313,41 @@ _seed() {  # _seed <fn> <sat-lines-newline-sep> <ratePerSec> <warmupGoDur>
   [ "$status" -ne 0 ]
 }
 
+# A whole-corpus replay that only times out (loaded rig) must not be a crash when every
+# saved input passes alone; a failing input or an unisolable one stays a real crash.
+_reverify_timeout_stub() {   # $1 = result of a single-input replay (0|1)
+  LOG_DIR="$BATS_TEST_TMPDIR"
+  mkdir -p "$BATS_TEST_TMPDIR/pkg/testdata/fuzz/FuzzX"
+  echo input > "$BATS_TEST_TMPDIR/pkg/testdata/fuzz/FuzzX/abc123"
+  cd "$BATS_TEST_TMPDIR/pkg"
+  SINGLE_RC="$1"
+  go() {
+    case "$*" in
+      *"/^abc123"*) return "$SINGLE_RC" ;;
+      *) echo "panic: test timed out after 2m0s"; return 1 ;;
+    esac
+  }
+}
+
+@test "reproducer_reverifies: corpus replay times out, every saved input passes alone -> TRANSIENT" {
+  _reverify_timeout_stub 0
+  run reproducer_reverifies FuzzX ./pkg
+  [ "$status" -ne 0 ]
+}
+
+@test "reproducer_reverifies: corpus replay times out, a saved input fails alone -> REAL" {
+  _reverify_timeout_stub 1
+  run reproducer_reverifies FuzzX ./pkg
+  [ "$status" -eq 0 ]
+}
+
+@test "reproducer_reverifies: timeout with no saved input to isolate -> REAL (never suppressed)" {
+  LOG_DIR="$BATS_TEST_TMPDIR"; cd "$BATS_TEST_TMPDIR"
+  go() { echo "panic: test timed out after 2m0s"; return 1; }
+  run reproducer_reverifies FuzzNoDir ./pkg
+  [ "$status" -eq 0 ]
+}
+
 # --- minimize-time cap (MINIMIZE_CAP) ----------------------------------------
 # `go` is stubbed as a shell function throughout: these tests pin the runner's
 # own decisions (measure, cache, threshold, flag spelling per launch path), not

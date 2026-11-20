@@ -809,13 +809,39 @@ _find_repro_dir() {
 # non-alert — so a genuinely reproducible crash is never suppressed. (2026-09-14: closes
 # the dashdiag "~92% of CRASH alerts are harness noise" class.)
 reproducer_reverifies() {
-  local fn="$1" pkg="$2" i
+  local fn="$1" pkg="$2" i out
   for ((i=1; i<=${REVERIFY_RUNS:-1}; i++)); do
-    if ! go test "$pkg" -run="^${fn}\$" -timeout="${REVERIFY_TIMEOUT:-2m}" >>"$LOG_DIR/${fn}.reverify.log" 2>&1; then
+    out="$(mktemp "${TMPDIR:-/tmp}/reverify.XXXXXX")"
+    if ! go test "$pkg" -run="^${fn}\$" -timeout="${REVERIFY_TIMEOUT:-2m}" >"$out" 2>&1; then
+      cat "$out" >>"$LOG_DIR/${fn}.reverify.log"
+      # The whole-corpus replay ran out of time (a loaded rig replaying many seeds) and
+      # every saved input passes when replayed on its own: that is load, not a
+      # reproducer. Anything else — a failure, or a timeout while an input is still
+      # failing or cannot be isolated — stays a REAL crash. (2026-11-20: two faultops
+      # targets opened false crash issues because the seed replay hit the 2m limit.)
+      if grep -q 'panic: test timed out' "$out" && _saved_inputs_replay_clean "$fn" "$pkg"; then
+        echo "[$(date -u +%FT%TZ)] reverify: $fn whole-corpus replay timed out but each saved input passes alone: treated as transient" >> "$LOG_DIR/rotation.log"
+        rm -f "$out"; continue
+      fi
+      rm -f "$out"
       return 0   # re-failed → real crash
     fi
+    rm -f "$out"
   done
   return 1        # every replay passed → transient, not a real crash
+}
+
+# _saved_inputs_replay_clean <fn> <pkg> -> 0 only if the target's saved reproducer dir
+# has at least one input and every one of them passes when replayed alone.
+_saved_inputs_replay_clean() {
+  local fn="$1" pkg="$2" dir f n=0
+  dir="$(_find_repro_dir "$fn")"; [ -n "$dir" ] || return 1
+  for f in "$dir"/*; do
+    [ -f "$f" ] || continue
+    n=$((n+1))
+    go test "$pkg" -run="^${fn}\$/^$(basename "$f")\$" -timeout="${REVERIFY_INPUT_TIMEOUT:-2m}" >>"$LOG_DIR/${fn}.reverify.log" 2>&1 || return 1
+  done
+  [ "$n" -gt 0 ]
 }
 
 # quarantine_unverified <fn> -> keep a LOCAL copy of a reproducer that did not re-verify,
