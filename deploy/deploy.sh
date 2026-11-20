@@ -91,6 +91,18 @@ deploy_one() {
   ssh "$host" mkdir -p "$dir/scripts" || die "[$rig] mkdir scripts failed"
   scp -q scripts/check-shared-pins.sh scripts/pin-drift-allowlist.tsv "$host:$dir/scripts/" || die "[$rig] scp drift-guard failed"
 
+  # Standalone target modules (libs-extra, libs) ARE the rig's working dir, so ship
+  # their sources (go.mod, go.sum, *_test.go, testdata) too -- otherwise the rig keeps
+  # whatever was copied by hand months ago (libs-extra ran Sept sources and pins).
+  case "$rig" in
+    libs-extra|libs)
+      [ -f "targets/$rig/go.mod" ] || die "[$rig] targets/$rig/go.mod missing"
+      COPYFILE_DISABLE=1 tar -C "targets/$rig" -cf - --exclude='._*' --exclude='*.syncbak' . |
+        ssh "$host" "tar -xf - -C '$dir'" || die "[$rig] ship targets/$rig failed"
+      echo "    shipped targets/$rig sources"
+      ;;
+  esac
+
   # Quoted heredoc: NO local expansion. All values are passed as positional args
   # (each a single space-free token: paths, hex shas, a tag, user@host, an ISO ts),
   # so ssh's arg-joining is safe and the remote does all the work.

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Weekly: sync targets/*/go.mod pins to keyorix main and open a PR.
+     Install: cp this file to ~/Library/LaunchAgents/ and
+              launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.keyorix.corobix-pin-sync.plist
+     If the Mac is asleep at the scheduled time, launchd runs it on wake. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.keyorix.corobix-pin-sync</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>/Users/abeshkov/proj/corobix/scripts/weekly-pin-sync.sh</string>
+	</array>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Weekday</key>
+		<integer>1</integer>
+		<key>Hour</key>
+		<integer>9</integer>
+		<key>Minute</key>
+		<integer>17</integer>
+	</dict>
+	<key>StandardOutPath</key>
+	<string>/Users/abeshkov/Library/Logs/corobix-pin-sync.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/abeshkov/Library/Logs/corobix-pin-sync.log</string>
+</dict>
+</plist>
