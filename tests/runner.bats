@@ -660,3 +660,47 @@ EOF
   run cut -f2-5 "$LOG_DIR/stalls.tsv"
   [ "$output" = "$(printf 'FuzzA\t3\t62.0\t75.2')" ]
 }
+
+# --- EXTRA_MODULES (nested modules in the rotation) ---------------------------
+
+# Root module with one Fuzz target plus a nested module (own go.mod, not in any
+# go.work) with another; stdlib only, so no network.
+_extra_fixture() {
+  FIX="$BATS_TEST_TMPDIR/mod"; mkdir -p "$FIX/rootpkg" "$FIX/sub/subpkg" "$BATS_TEST_TMPDIR/state"
+  printf 'module example.com/mod\n\ngo 1.22\n' >"$FIX/go.mod"
+  printf 'module example.com/mod/sub\n\ngo 1.22\n' >"$FIX/sub/go.mod"
+  printf 'package rootpkg\n\nimport "testing"\n\nfunc FuzzRoot(f *testing.F) { f.Fuzz(func(t *testing.T, b []byte) {}) }\n' >"$FIX/rootpkg/r_test.go"
+  printf 'package subpkg\n\nimport "testing"\n\nfunc FuzzSub(f *testing.F) { f.Fuzz(func(t *testing.T, b []byte) {}) }\n' >"$FIX/sub/subpkg/s_test.go"
+  MODULE_DIR="$FIX"; STATE_DIR="$BATS_TEST_TMPDIR/state"
+  unset GOWORK
+}
+
+@test "discover without EXTRA_MODULES does not see a nested module's targets" {
+  _extra_fixture
+  EXTRA_MODULES=""
+  cd "$FIX"
+  run discover
+  [[ "$output" == *"example.com/mod/rootpkg|FuzzRoot"* ]]
+  [[ "$output" != *"FuzzSub"* ]]
+}
+
+@test "discover with EXTRA_MODULES includes the nested module's targets" {
+  _extra_fixture
+  EXTRA_MODULES="sub"
+  setup_extra_modules
+  cd "$FIX"
+  run discover
+  [[ "$output" == *"example.com/mod/rootpkg|FuzzRoot"* ]]
+  [[ "$output" == *"example.com/mod/sub/subpkg|FuzzSub"* ]]
+}
+
+@test "setup_extra_modules writes the workspace outside the checkout and skips a dir with no go.mod" {
+  _extra_fixture
+  EXTRA_MODULES="sub nonexistent"
+  run setup_extra_modules
+  [ "$status" -eq 0 ]
+  setup_extra_modules 2>/dev/null
+  [ "$GOWORK" = "$STATE_DIR/extra-modules.go.work" ]
+  grep -q "$FIX/sub" "$GOWORK"
+  ! grep -q nonexistent "$GOWORK"
+}

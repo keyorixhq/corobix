@@ -135,13 +135,42 @@ sync_main() {   # git mode only; MUST be non-fatal (a fetch blip must never take
   log "fetch still failing — fuzzing existing checkout ($(git rev-parse --short HEAD 2>/dev/null || echo unknown))"
 }
 
+# setup_extra_modules: EXTRA_MODULES="cli migrate" (fuzz.conf, space-separated dirs
+# relative to MODULE_DIR) opts nested Go modules into the rotation. `go list ./...`
+# and a root `go test <import path>` never see a nested module that go.work does
+# not `use`, so those modules' Fuzz targets were silently never fuzzed. We write a
+# throwaway workspace (outside the checkout, so git sync never touches it) listing
+# MODULE_DIR plus each extra module and export GOWORK at it: every later
+# `go test <import path>` then resolves unchanged. Trade-off: the workspace builds
+# a nested module against the highest dependency versions across the listed
+# modules, not strictly its own go.mod pins; the drift-guard keeps those aligned.
+setup_extra_modules() {
+  [ -n "${EXTRA_MODULES:-}" ] || return 0
+  local gv work="$STATE_DIR/extra-modules.go.work" m
+  gv="$(awk '$1=="go" {print $2; exit}' "$MODULE_DIR/go.mod" 2>/dev/null)"
+  {
+    printf 'go %s\n\nuse (\n\t%s\n' "${gv:-1.22}" "$MODULE_DIR"
+    for m in $EXTRA_MODULES; do
+      if [ -f "$MODULE_DIR/$m/go.mod" ]; then printf '\t%s\n' "$MODULE_DIR/$m"
+      else echo "fuzz-runner: EXTRA_MODULES: $MODULE_DIR/$m has no go.mod — skipped" >&2; fi
+    done
+    printf ')\n'
+  } >"$work"
+  export GOWORK="$work"
+}
+
 discover() {    # emit "pkg|Func"; drift-proof (same go test -list CI uses)
-  local pkg
+  local pkg m modpath
   while IFS= read -r pkg; do
     go test -list '^Fuzz' "$pkg" 2>/dev/null | grep '^Fuzz' | while IFS= read -r fn; do
       printf '%s|%s\n' "$pkg" "$fn"
     done
-  done < <(go list ./... 2>/dev/null)
+  done < <(go list ./... 2>/dev/null
+    # Nested modules from EXTRA_MODULES are not matched by ./... — list each by import path.
+    for m in ${EXTRA_MODULES:-}; do
+      modpath="$(awk '$1=="module" {print $2; exit}' "$MODULE_DIR/$m/go.mod" 2>/dev/null)"
+      [ -n "$modpath" ] && go list "$modpath/..." 2>/dev/null
+    done)
 }
 
 # --- FUZZ_PREBUILT mode (opt-in via fuzz.conf; default off = unchanged behavior) ---
@@ -964,6 +993,7 @@ main() {
   : "${MINIMIZE_CAP:=off}"; : "${MINIMIZE_CAP_VALUE:=100x}"; : "${MINIMIZE_CAP_THRESHOLD:=100000}"
   # Concurrent-target mode (off = unchanged behavior; see the section above
   # is_slow_target). CONCURRENT_MAX_TARGETS floors at 2 inside pick_group_size.
+  : "${EXTRA_MODULES:=}"
   : "${CONCURRENT_TARGETS:=off}"; : "${CONCURRENT_SLOW_THRESHOLD:=20}"; : "${CONCURRENT_MAX_TARGETS:=3}"
   [ -n "${CRASH_MODE:-}" ] && echo "fuzz-runner: CRASH_MODE is deprecated — rename it to REPORT_MODE in fuzz.conf (honored for now)" >&2
   local eff; eff="$(effective_report_mode)"
@@ -972,6 +1002,8 @@ main() {
   mkdir -p "$STATE_DIR" "$LOG_DIR" "$FINDINGS_DIR"
   CONF_HASH="$(sha256sum "$CONF" | cut -d' ' -f1)"
   cd "$MODULE_DIR" || { echo "fuzz-runner: MODULE_DIR not found: $MODULE_DIR" >&2; exit 1; }
+  setup_extra_modules
+  [ -n "$EXTRA_MODULES" ] && [ "${FUZZ_PREBUILT:-0}" = 1 ] && log "EXTRA_MODULES is ignored with FUZZ_PREBUILT=1 (prebuilt discovery lists the root module only)"
 
   # Shared-module pin drift, warning-only: a target module fuzzing a version of a
   # library keyorix no longer ships (or ships a different version of) is silent
@@ -981,8 +1013,19 @@ main() {
   # alongside the runner) — a rig without it just logs that once and moves on;
   # this is advisory, never a reason to refuse to fuzz.
   if [ -x "$SCRIPT_DIR/scripts/check-shared-pins.sh" ]; then
-    "$SCRIPT_DIR/scripts/check-shared-pins.sh" --warn-only "$MODULE_DIR" 2>&1 |
-      while IFS= read -r drift_line; do log "drift-guard: $drift_line"; done
+    # Check only the modules this rig actually fuzzes: with EXTRA_MODULES that is
+    # those dirs (the root module is the baseline they are compared against);
+    # without it, the whole MODULE_DIR as before.
+    local dg_roots=() dg_m dg_root
+    if [ -n "$EXTRA_MODULES" ]; then
+      for dg_m in $EXTRA_MODULES; do dg_roots+=("$MODULE_DIR/$dg_m"); done
+    else
+      dg_roots=("$MODULE_DIR")
+    fi
+    for dg_root in "${dg_roots[@]}"; do
+      "$SCRIPT_DIR/scripts/check-shared-pins.sh" --warn-only "$dg_root" 2>&1 |
+        while IFS= read -r drift_line; do log "drift-guard: $drift_line"; done
+    done
   else
     log "drift-guard: scripts/check-shared-pins.sh not deployed here — skipping (advisory only)"
   fi
