@@ -523,7 +523,7 @@ pick_group_size() {
 # resumes at the correct next position exactly as a kill mid-single-target
 # slice always has.
 run_target_group() {
-  local i="$1" gsize="$2" gi gentry gpkg gfn gdur gmt gmbytes d idx rc wkmsg
+  local i="$1" gsize="$2" gi gentry gpkg gfn gdur gmt gmbytes newrepro idx rc wkmsg
   local -a group_fns=() pids=() offs=()
   for (( gi = 0; gi < gsize; gi++ )); do
     group_fns+=("${TARGETS[$((i + gi))]}")
@@ -539,6 +539,7 @@ run_target_group() {
     fi
     [ "$gsize" -eq 1 ] && log "=== fuzzing $gfn ($gpkg) for $gdur${gmt:+ minimizetime=$gmt (map ${gmbytes}B)} ==="
     offs+=("$(wc -c < "$LOG_DIR/${gfn}.log" 2>/dev/null || echo 0)")
+    snapshot_repro_files "$gfn"
     # Freeze instrumentation: fuzzutil's stall monitor appends one line per detected
     # process freeze to this file (see stall_summary). Truncated per slice.
     mkdir -p "$LOG_DIR/stalls"; : >"$LOG_DIR/stalls/${gfn}.stalls"
@@ -548,11 +549,11 @@ run_target_group() {
   for idx in "${!pids[@]}"; do
     wait "${pids[$idx]}"; rc=$?
     gentry="${group_fns[$idx]}"; gpkg="${gentry%%|*}"; gfn="${gentry##*|}"
-    d="$(find . -type d -path "*/testdata/fuzz/$gfn" 2>/dev/null | head -1)"
+    newrepro="$(new_repro_files "$gfn")"
     if is_signal_death "$rc"; then
       log "$gfn ($gpkg): process died by $(classify_exit "$rc" | cut -d: -f3) (exit $rc) — OS-level kill, not a Go panic. Likely a crash reached across a cgo boundary, or an OOM kill."
     fi
-    if [ -n "$d" ] && [ -n "$(ls -A "$d" 2>/dev/null)" ]; then
+    if [ -n "$newrepro" ]; then
       if [ "${REVERIFY_CRASH:-on}" = on ] && ! reproducer_reverifies "$gfn" "$gpkg"; then
         log "$gfn: reproducer did NOT re-fail on ${REVERIFY_RUNS:-1}x replay — transient worker death, not alerting (local copy kept in $FINDINGS_DIR/$gfn)"
         quarantine_unverified "$gfn"
@@ -826,6 +827,53 @@ _find_repro_dir() {
   find "$PWD" -type d -path "*/testdata/fuzz/$1" 2>/dev/null | head -1
 }
 
+# A target's testdata/fuzz/<fn> directory holds its CHECKED-IN seed corpus as well as
+# any crasher `go test -fuzz` writes, so "the directory is not empty" says nothing about
+# whether a run produced a reproducer (2026-11-20: fuzz-corpus#171 — a run that ended
+# 'fuzzing process terminated without fuzzing: EOF' after the fuzz database hung was
+# alerted as a crash, and the 13 seed files were archived as its 'reproducer').
+# snapshot_repro_files records the files present BEFORE a slice; new_repro_files lists
+# only those that appeared during it. The snapshot is mandatory for the gate: with no
+# snapshot every file counts as new, i.e. the old behaviour, never a suppressed crash.
+snapshot_repro_files() {
+  local fn="$1" dir
+  mkdir -p "$LOG_DIR/prefuzz" 2>/dev/null || return 0
+  dir="$(_find_repro_dir "$fn")"
+  if [ -n "$dir" ]; then
+    find "$dir" -maxdepth 1 -type f 2>/dev/null | sort >"$LOG_DIR/prefuzz/$fn.list"
+  else
+    : >"$LOG_DIR/prefuzz/$fn.list"
+  fi
+}
+
+# new_repro_files <fn> -> absolute paths of the files in <fn>'s testdata/fuzz dir that were
+# not in the pre-slice snapshot (one per line; nothing when the slice wrote none).
+new_repro_files() {
+  local fn="$1" dir snap
+  dir="$(_find_repro_dir "$fn")"; [ -n "$dir" ] || return 0
+  snap="$LOG_DIR/prefuzz/$fn.list"
+  if [ -f "$snap" ]; then
+    find "$dir" -maxdepth 1 -type f 2>/dev/null | sort | comm -23 - "$snap"
+  else
+    find "$dir" -maxdepth 1 -type f 2>/dev/null | sort
+  fi
+}
+
+# _new_repro_dir <fn> -> ABSOLUTE path of a staging dir holding copies of only the files
+# new_repro_files lists (empty output when there are none). Reused per target, so it
+# never accumulates; callers copy out of it and treat it as read-only.
+_new_repro_dir() {
+  local fn="$1" stage f n=0
+  stage="$LOG_DIR/prefuzz/stage-$fn"
+  rm -rf "$stage"; mkdir -p "$stage" 2>/dev/null || return 0
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    cp -a "$f" "$stage"/ 2>/dev/null && n=$((n+1))
+  done < <(new_repro_files "$fn")
+  [ "$n" -gt 0 ] && printf '%s\n' "$stage"
+  return 0
+}
+
 # reproducer_reverifies <fn> <pkg> -> 0 (REAL: the saved input re-fails on replay) or
 # 1 (TRANSIENT: it replays clean REVERIFY_RUNS times). A `go test -fuzz` non-zero exit
 # that leaves a reproducer is treated as a crash by the caller — but Go also writes a
@@ -853,7 +901,7 @@ reproducer_reverifies() {
 quarantine_unverified() {
   local fn="$1" ts src dest
   ts="$(date -u +%Y%m%dT%H%M%SZ)"
-  src="$(_find_repro_dir "$fn")"; [ -n "$src" ] || return 0
+  src="$(_new_repro_dir "$fn")"; [ -n "$src" ] || return 0
   dest="$FINDINGS_DIR/$fn/unverified-$ts"; mkdir -p "$dest"
   cp -a "$src"/. "$dest"/ 2>/dev/null || true
 }
@@ -861,7 +909,7 @@ quarantine_unverified() {
 handle_crash() { # $1=fn $2=pkg $3=rc ; called only when a real reproducer exists
   local fn="$1" pkg="$2" rc="$3" ts src dest mode body
   ts="$(date -u +%Y%m%dT%H%M%SZ)"; mode="$(effective_report_mode)"
-  src="$(_find_repro_dir "$fn")"   # absolute — see _find_repro_dir
+  src="$(_new_repro_dir "$fn")"   # absolute; ONLY the files this slice wrote, not the seed corpus
   # Always keep a local copy first, so no reproducer is ever lost to a push failure.
   dest="$FINDINGS_DIR/$fn/$ts"; mkdir -p "$dest"
   [ -n "$src" ] && cp -a "$src"/. "$dest"/ 2>/dev/null
