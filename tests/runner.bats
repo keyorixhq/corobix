@@ -608,9 +608,8 @@ _fake_nm() {   # go tool nm output with the two counter symbols 0x1555 = 5461 ap
   resolve_duration() { echo 15m; }
   MINIMIZE_CAP=off REVERIFY_CRASH=off
   mkdir -p "$BATS_TEST_TMPDIR/sub/testdata/fuzz/FuzzA"
-  echo x > "$BATS_TEST_TMPDIR/sub/testdata/fuzz/FuzzA/repro1"
   cd "$BATS_TEST_TMPDIR/sub"
-  run_slice() { return 1; }
+  run_slice() { echo x > "$BATS_TEST_TMPDIR/sub/testdata/fuzz/FuzzA/repro1"; return 1; }   # the slice writes the crasher
   handle_crash() { echo "crash $1 $2 $3" >> "$BATS_TEST_TMPDIR/calls"; }
   record_saturation() { :; }
   run run_target_group 0 2
@@ -625,9 +624,8 @@ _fake_nm() {   # go tool nm output with the two counter symbols 0x1555 = 5461 ap
   resolve_duration() { echo 15m; }
   MINIMIZE_CAP=off REVERIFY_CRASH=on
   mkdir -p "$BATS_TEST_TMPDIR/sub2/testdata/fuzz/FuzzA"
-  echo x > "$BATS_TEST_TMPDIR/sub2/testdata/fuzz/FuzzA/repro1"
   cd "$BATS_TEST_TMPDIR/sub2"
-  run_slice() { return 1; }
+  run_slice() { echo x > "$BATS_TEST_TMPDIR/sub2/testdata/fuzz/FuzzA/repro1"; return 1; }
   reproducer_reverifies() { return 1; }   # transient
   handle_crash() { echo "SHOULD NOT BE CALLED" >> "$BATS_TEST_TMPDIR/calls"; }
   quarantine_unverified() { echo "quarantined $1" >> "$BATS_TEST_TMPDIR/calls"; }
@@ -636,6 +634,44 @@ _fake_nm() {   # go tool nm output with the two counter symbols 0x1555 = 5461 ap
   [ "$status" -eq 0 ]
   grep -q '^quarantined FuzzA$' "$BATS_TEST_TMPDIR/calls"
   ! grep -q 'SHOULD NOT' "$BATS_TEST_TMPDIR/calls"
+}
+
+@test "run_target_group: a failing slice that wrote no file is NOT a crash, whatever seeds are checked in (fuzz-corpus#171)" {
+  TARGETS=("pkgA|FuzzA")
+  LOG_DIR="$BATS_TEST_TMPDIR"; FINDINGS_DIR="$BATS_TEST_TMPDIR/findings"
+  resolve_duration() { echo 15m; }
+  MINIMIZE_CAP=off REVERIFY_CRASH=on
+  mkdir -p "$BATS_TEST_TMPDIR/sub3/testdata/fuzz/FuzzA"
+  echo seed > "$BATS_TEST_TMPDIR/sub3/testdata/fuzz/FuzzA/seed1"
+  cd "$BATS_TEST_TMPDIR/sub3"
+  run_slice() { echo "--- FAIL: FuzzA (4605.15s)" ; echo "    fuzzing process terminated without fuzzing: EOF"; return 1; }
+  reproducer_reverifies() { echo "reverify" >> "$BATS_TEST_TMPDIR/calls"; return 0; }
+  handle_crash() { echo "handle_crash" >> "$BATS_TEST_TMPDIR/calls"; }
+  quarantine_unverified() { echo "quarantine" >> "$BATS_TEST_TMPDIR/calls"; }
+  report_nonrepro_exit() { echo "nonrepro $1 $2" >> "$BATS_TEST_TMPDIR/calls"; }
+  record_saturation() { :; }
+  run run_target_group 0 1
+  [ "$status" -eq 0 ]
+  grep -q '^nonrepro FuzzA 1$' "$BATS_TEST_TMPDIR/calls"
+  ! grep -qE 'handle_crash|quarantine|reverify' "$BATS_TEST_TMPDIR/calls"
+}
+
+@test "run_target_group: a seed-only dir and a clean exit does nothing" {
+  TARGETS=("pkgA|FuzzA")
+  LOG_DIR="$BATS_TEST_TMPDIR"; FINDINGS_DIR="$BATS_TEST_TMPDIR/findings"
+  resolve_duration() { echo 15m; }
+  MINIMIZE_CAP=off REVERIFY_CRASH=on
+  mkdir -p "$BATS_TEST_TMPDIR/sub4/testdata/fuzz/FuzzA"
+  echo seed > "$BATS_TEST_TMPDIR/sub4/testdata/fuzz/FuzzA/seed1"
+  cd "$BATS_TEST_TMPDIR/sub4"
+  run_slice() { return 0; }
+  reproducer_reverifies() { echo "reverify" >> "$BATS_TEST_TMPDIR/calls"; return 0; }
+  handle_crash() { echo "handle_crash" >> "$BATS_TEST_TMPDIR/calls"; }
+  quarantine_unverified() { echo "quarantine" >> "$BATS_TEST_TMPDIR/calls"; }
+  record_saturation() { :; }
+  run run_target_group 0 1
+  [ "$status" -eq 0 ]
+  [ ! -s "$BATS_TEST_TMPDIR/calls" ] || false
 }
 
 # --- stall_summary -----------------------------------------------------------
@@ -703,4 +739,62 @@ _extra_fixture() {
   [ "$GOWORK" = "$STATE_DIR/extra-modules.go.work" ]
   grep -q "$FIX/sub" "$GOWORK"
   ! grep -q nonexistent "$GOWORK"
+}
+
+# --- new_repro_files: checked-in seeds are not a reproducer (fuzz-corpus#171) ---
+
+@test "new_repro_files: a slice that wrote nothing yields no reproducer even with a seed corpus" {
+  LOG_DIR="$BATS_TEST_TMPDIR/logs"; mkdir -p "$LOG_DIR"
+  mod="$BATS_TEST_TMPDIR/mod"; mkdir -p "$mod/testdata/fuzz/FuzzZ"
+  echo a > "$mod/testdata/fuzz/FuzzZ/seed1"; echo b > "$mod/testdata/fuzz/FuzzZ/seed2"
+  cd "$mod"
+  snapshot_repro_files FuzzZ
+  run new_repro_files FuzzZ
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "new_repro_files: only a file written during the slice is reported" {
+  LOG_DIR="$BATS_TEST_TMPDIR/logs"; mkdir -p "$LOG_DIR"
+  mod="$BATS_TEST_TMPDIR/mod"; mkdir -p "$mod/testdata/fuzz/FuzzZ"
+  echo a > "$mod/testdata/fuzz/FuzzZ/seed1"
+  cd "$mod"
+  snapshot_repro_files FuzzZ
+  echo crash > "$mod/testdata/fuzz/FuzzZ/deadbeef"
+  run new_repro_files FuzzZ
+  [ "$output" = "$mod/testdata/fuzz/FuzzZ/deadbeef" ]
+}
+
+@test "new_repro_files: no snapshot means every file counts (never suppresses a crash)" {
+  LOG_DIR="$BATS_TEST_TMPDIR/logs"; mkdir -p "$LOG_DIR"
+  mod="$BATS_TEST_TMPDIR/mod"; mkdir -p "$mod/testdata/fuzz/FuzzZ"
+  echo a > "$mod/testdata/fuzz/FuzzZ/seed1"
+  cd "$mod"
+  run new_repro_files FuzzZ
+  [ "$output" = "$mod/testdata/fuzz/FuzzZ/seed1" ]
+}
+
+@test "new_repro_files: a target whose testdata dir appears during the slice reports its files" {
+  LOG_DIR="$BATS_TEST_TMPDIR/logs"; mkdir -p "$LOG_DIR"
+  mod="$BATS_TEST_TMPDIR/mod"; mkdir -p "$mod"
+  cd "$mod"
+  snapshot_repro_files FuzzZ
+  mkdir -p testdata/fuzz/FuzzZ; echo crash > testdata/fuzz/FuzzZ/c1
+  run new_repro_files FuzzZ
+  [ "$output" = "$mod/testdata/fuzz/FuzzZ/c1" ]
+}
+
+@test "_new_repro_dir stages only the new files, and nothing when there are none" {
+  LOG_DIR="$BATS_TEST_TMPDIR/logs"; mkdir -p "$LOG_DIR"
+  mod="$BATS_TEST_TMPDIR/mod"; mkdir -p "$mod/testdata/fuzz/FuzzZ"
+  echo a > "$mod/testdata/fuzz/FuzzZ/seed1"
+  cd "$mod"
+  snapshot_repro_files FuzzZ
+  run _new_repro_dir FuzzZ
+  [ -z "$output" ]
+  echo crash > "$mod/testdata/fuzz/FuzzZ/deadbeef"
+  run _new_repro_dir FuzzZ
+  [[ "$output" == /* ]] || false
+  [ -f "$output/deadbeef" ]
+  [ ! -e "$output/seed1" ]
 }
