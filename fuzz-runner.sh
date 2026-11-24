@@ -16,17 +16,31 @@ source "$SCRIPT_DIR/lib/fuzz-report.sh"
 source "$SCRIPT_DIR/lib/exit-classify.sh"
 
 log()   { echo "[$(date -u +%FT%TZ)] $*" | tee -a "${LOG_DIR:-/tmp}/rotation.log" >&2; }
-# notify <body>: an empty body would reach ntfy as the default text "triggered" with no
-# host or cause, so never send one; log it instead and send a message that names the host.
+# notify <body> [priority] [tags] [title]: an empty body would reach ntfy as the default text
+# "triggered" with no host or cause, so never send one; log it instead and send a message that
+# names the host. priority is the ntfy level (1 min .. 5 max/urgent, urgent overrides Do Not
+# Disturb in the app); tags are ntfy tag names (rendered as emoji); title replaces the default.
+# Crashes use notify_crash so they stand out from saturation digests and infra notes.
+# Headers stay plain ASCII: ntfy rejects or mangles non-ASCII header values.
 notify(){
   [ -n "${NOTIFY_URL:-}" ] || return 0
-  local body="$1"
+  local body="$1" prio="${2:-}" tags="${3:-}" title="${4:-}"
   if [ -z "${body//[[:space:]]/}" ]; then
     body="$(hostname): fuzz-runner tried to send an empty notification (bug in the caller; see rotation.log)"
     echo "[$(date -u +%FT%TZ)] notify: empty body replaced" >> "${LOG_DIR:-/tmp}/rotation.log"
   fi
-  curl -fsS -m 10 -H "Title: fuzz-runner $(hostname)" -d "$body" "$NOTIFY_URL" >/dev/null 2>&1 || true
+  [ -n "$title" ] || title="fuzz-runner $(hostname)"
+  local -a hdr=(-H "Title: $title")
+  [ -n "$prio" ] && hdr+=(-H "Priority: $prio")
+  [ -n "$tags" ] && hdr+=(-H "Tags: $tags")
+  curl -fsS -m 10 "${hdr[@]}" -d "$body" "$NOTIFY_URL" >/dev/null 2>&1 || true
 }
+# notify_crash <body> <target>: a confirmed crash. Max priority and a siren tag, and the target
+# name leads the title so it is readable in the notification shade without opening it.
+notify_crash(){ notify "$1" "${NOTIFY_CRASH_PRIORITY:-5}" "rotating_light,skull" "CRASH $2 on $(hostname)"; }
+# notify_alert <body> <target>: needs attention but is not a confirmed crash (broken harness,
+# a worker killed by a signal with no reproducer).
+notify_alert(){ notify "$1" "${NOTIFY_ALERT_PRIORITY:-4}" "warning" "ALERT $2 on $(hostname)"; }
 
 # dur_to_secs <godur> -> integer seconds for an h/m/s go-duration ("1h30m","15m",
 # "90s") or a bare integer (already seconds). Unparseable -> 0. (go test -fuzztime
@@ -596,7 +610,7 @@ report_nonrepro_exit() {
     stamp="${STATE_DIR:-.}/seedfail-${fn}"
     if [ "$(cat "$stamp" 2>/dev/null)" != "$today" ]; then
       printf '%s\n' "$today" > "$stamp" 2>/dev/null || true
-      notify "HARNESS BROKEN: $fn fails on its own seed corpus on $(hostname) — ${msg:-see $LOG_DIR/${fn}.log}"
+      notify_alert "HARNESS BROKEN: $fn fails on its own seed corpus on $(hostname) — ${msg:-see $LOG_DIR/${fn}.log}" "$fn"
     fi
   else
     log "$fn exited $rc with no reproducer — infra/timeout, logged not alerted"
@@ -614,7 +628,7 @@ report_signal_death() {
   local fn="$1" pkg="$2" rc="$3" cls name
   cls="$(classify_exit "$rc")"; name="${cls##*:}"
   log "$fn ($pkg): KILLED BY $name (exit $rc) with NO testdata/fuzz reproducer saved — OS-level death, not a Go panic; likely a cgo-boundary crash or an OOM kill. The triggering input may be gone; see $LOG_DIR/${fn}.log."
-  notify "$(fuzz_report_msg "signal-death" "$fn" "$pkg" "" "killed by $name (exit $rc), no reproducer saved")"
+  notify_alert "$(fuzz_report_msg "signal-death" "$fn" "$pkg" "" "killed by $name (exit $rc), no reproducer saved")" "$fn"
 }
 
 # worker_killed_no_crash_message <fn> <offset> -> prints Go's own explanation line and returns 0
@@ -645,7 +659,7 @@ worker_killed_no_crash_message() {
 report_worker_killed_no_crash() {
   local fn="$1" pkg="$2" msg="$3"
   log "$fn ($pkg): $msg — go's own fuzz coordinator declined to save a reproducer (not treated as crash-indicative, e.g. SIGKILL/SIGHUP); likely an OOM kill or external supervisor. The triggering input may be gone; see $LOG_DIR/${fn}.log."
-  notify "$(fuzz_report_msg "signal-death" "$fn" "$pkg" "" "$msg; no reproducer saved")"
+  notify_alert "$(fuzz_report_msg "signal-death" "$fn" "$pkg" "" "$msg; no reproducer saved")" "$fn"
 }
 
 # stall_summary <fn> -> after a slice, summarise the freezes the target's process saw
@@ -817,7 +831,7 @@ saturation_report() {
     msg="$msg
   $fn: $(sat_verdict "$n" "$s")"
   done
-  notify "$msg"; echo "$now" > "$stamp"; log "saturation report sent"
+  notify "$msg" 2 "bar_chart" "saturation report $(hostname)"; echo "$now" > "$stamp"; log "saturation report sent"
 }
 
 # _find_repro_dir <fn> -> ABSOLUTE path of the go-fuzz reproducer dir for <fn>, or
@@ -942,12 +956,12 @@ handle_crash() { # $1=fn $2=pkg $3=rc ; called only when a real reproducer exist
       git push -f -u "$GIT_REMOTE" "$CORPUS_BRANCH" -q 2>/dev/null || log "push failed for $CORPUS_BRANCH (non-fatal)"
       command -v gh >/dev/null && gh pr create --base "$GIT_BRANCH" --head "$CORPUS_BRANCH" \
         --title "fuzz(crash): $fn" --body "Crash reproducer for \`$fn\` in \`$pkg\`. Reproduce: \`go test -run='^$fn\$' $pkg\`." >/dev/null 2>&1 || true
-      notify "$(fuzz_report_msg "public PR" "$fn" "$pkg" "$dest")"
+      notify_crash "$(fuzz_report_msg "public PR" "$fn" "$pkg" "$dest")" "$fn"
       ;;
     private)
       log "CRASH $fn ($pkg) rc=$rc — pushing to private $CORPUS_REPO (local copy -> $dest)"
       push_crasher_private "$fn" "$pkg" "$ts" "$src"
-      notify "$(fuzz_report_msg "private" "$fn" "$pkg" "$dest" "pushed to $CORPUS_PROJECT")"
+      notify_crash "$(fuzz_report_msg "private" "$fn" "$pkg" "$dest" "pushed to $CORPUS_PROJECT")" "$fn"
       ;;
     issue)
       # PUBLIC GitHub issue as a repro POINTER — never the raw crashing input
@@ -1002,11 +1016,11 @@ $body" >/dev/null 2>&1 \
       else
         log "gh not available — cannot open issue; reproducer kept local -> $dest"
       fi
-      notify "$(fuzz_report_msg "issue" "$fn" "$pkg")"   # no path arg — disclosure safety
+      notify_crash "$(fuzz_report_msg "issue" "$fn" "$pkg")" "$fn"   # no path arg — disclosure safety
       ;;
     *)
       log "CRASH $fn ($pkg) rc=$rc — reproducer(s) -> $dest (mode=local, NOT published)"
-      notify "$(fuzz_report_msg "local" "$fn" "$pkg" "$dest")"
+      notify_crash "$(fuzz_report_msg "local" "$fn" "$pkg" "$dest")" "$fn"
       ;;
   esac
 }

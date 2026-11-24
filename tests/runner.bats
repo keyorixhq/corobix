@@ -798,3 +798,65 @@ _extra_fixture() {
   [ -f "$output/deadbeef" ]
   [ ! -e "$output/seed1" ]
 }
+
+# --- notify / notify_crash / notify_alert: crashes must be distinguishable in ntfy ---------
+
+_stub_curl() {
+  CURL_ARGS_FILE="$BATS_TEST_TMPDIR/curl.args"
+  : >"$CURL_ARGS_FILE"
+  curl() { printf '%s\n' "$@" >"$CURL_ARGS_FILE"; }
+  NOTIFY_URL=https://ntfy.invalid/topic
+  LOG_DIR="$BATS_TEST_TMPDIR"
+}
+
+@test "notify_crash sends max priority, siren tags and a title that leads with the target" {
+  _stub_curl
+  notify_crash "boxA CRASH (issue) FuzzX in pkg/x" FuzzX
+  run cat "$CURL_ARGS_FILE"
+  [[ "$output" == *"Priority: 5"* ]]
+  [[ "$output" == *"Tags: rotating_light,skull"* ]]
+  [[ "$output" == *"Title: CRASH FuzzX on "* ]]
+  [[ "$output" == *"boxA CRASH (issue) FuzzX in pkg/x"* ]]
+}
+
+@test "notify_alert is high priority with a warning tag, distinct from a crash" {
+  _stub_curl
+  notify_alert "HARNESS BROKEN: FuzzY" FuzzY
+  run cat "$CURL_ARGS_FILE"
+  [[ "$output" == *"Priority: 4"* ]]
+  [[ "$output" == *"Tags: warning"* ]]
+  [[ "$output" == *"Title: ALERT FuzzY on "* ]]
+  [[ "$output" != *"skull"* ]]
+}
+
+@test "plain notify keeps the old shape: default title, no priority, no tags" {
+  _stub_curl
+  notify "hello"
+  run cat "$CURL_ARGS_FILE"
+  [[ "$output" == *"Title: fuzz-runner "* ]]
+  [[ "$output" != *"Priority:"* ]]
+  [[ "$output" != *"Tags:"* ]]
+}
+
+@test "NOTIFY_CRASH_PRIORITY overrides the crash priority" {
+  _stub_curl
+  NOTIFY_CRASH_PRIORITY=4
+  notify_crash "x" FuzzZ
+  run cat "$CURL_ARGS_FILE"
+  [[ "$output" == *"Priority: 4"* ]]
+}
+
+@test "notify_crash with an empty body still sends a host-naming message" {
+  _stub_curl
+  notify_crash "   " FuzzE
+  run cat "$CURL_ARGS_FILE"
+  [[ "$output" == *"fuzz-runner tried to send an empty notification"* ]]
+  [[ "$output" == *"Priority: 5"* ]]
+}
+
+@test "notify sends nothing when NOTIFY_URL is unset" {
+  _stub_curl
+  NOTIFY_URL=
+  notify_crash "x" FuzzN
+  [ -z "$(cat "$CURL_ARGS_FILE")" ]
+}
