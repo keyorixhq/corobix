@@ -860,3 +860,48 @@ _stub_curl() {
   notify_crash "x" FuzzN
   [ -z "$(cat "$CURL_ARGS_FILE")" ]
 }
+
+# --- target_env / ENV_<fn>: per-target environment, never global ---------------------------
+
+@test "target_env reads ENV_<fn> into TARGET_ENV and nothing else" {
+  LOG_DIR="$BATS_TEST_TMPDIR"
+  ENV_FuzzA="KX_HOSTILE_ALLOW=O7 OTHER=1"
+  target_env FuzzA
+  [ "${#TARGET_ENV[@]}" -eq 2 ]
+  [ "${TARGET_ENV[0]}" = "KX_HOSTILE_ALLOW=O7" ]
+  [ "${TARGET_ENV[1]}" = "OTHER=1" ]
+  target_env FuzzB
+  [ "${#TARGET_ENV[@]}" -eq 0 ]
+}
+
+@test "target_env skips and logs malformed tokens instead of running them" {
+  LOG_DIR="$BATS_TEST_TMPDIR"
+  ENV_FuzzM='GOOD=1 bad;rm 9X=1 =x'
+  target_env FuzzM
+  [ "${#TARGET_ENV[@]}" -eq 1 ]
+  [ "${TARGET_ENV[0]}" = "GOOD=1" ]
+  run grep -c "ignoring malformed token" "$LOG_DIR/rotation.log"
+  [ "$output" = "3" ]
+}
+
+@test "run_slice applies the target's env to go test and no other target's" {
+  LOG_DIR="$BATS_TEST_TMPDIR"
+  FUZZ_PREBUILT=0 PARALLEL=2
+  ENV_FuzzAws="KX_HOSTILE_ALLOW=O7"
+  go() { printf 'KX_HOSTILE_ALLOW=%s\n' "${KX_HOSTILE_ALLOW:-unset}" >"$BATS_TEST_TMPDIR/go.seen"; }
+  run_slice example.com/p FuzzAws 1s ""
+  run cat "$BATS_TEST_TMPDIR/go.seen"
+  [ "$output" = "KX_HOSTILE_ALLOW=O7" ]
+  run_slice example.com/p FuzzOther 1s ""
+  run cat "$BATS_TEST_TMPDIR/go.seen"
+  [ "$output" = "KX_HOSTILE_ALLOW=unset" ]
+}
+
+@test "reproducer_reverifies replays with the target's env" {
+  LOG_DIR="$BATS_TEST_TMPDIR"
+  ENV_FuzzAws="KX_HOSTILE_ALLOW=O7"
+  go() { printf 'KX_HOSTILE_ALLOW=%s\n' "${KX_HOSTILE_ALLOW:-unset}" >"$BATS_TEST_TMPDIR/go.seen"; return 0; }
+  run reproducer_reverifies FuzzAws example.com/p
+  run cat "$BATS_TEST_TMPDIR/go.seen"
+  [ "$output" = "KX_HOSTILE_ALLOW=O7" ]
+}

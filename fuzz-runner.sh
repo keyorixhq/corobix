@@ -688,19 +688,38 @@ stall_summary() {
 # which case it execs that generation's prebuilt binary directly with the
 # identical -test.* flags (see the header comment above discover()'s
 # FUZZ_PREBUILT section) — same corpus cache dir, same crasher path.
+# target_env <fn>: fills the global TARGET_ENV array from ENV_<fn> in fuzz.conf, a space-separated
+# list of KEY=VALUE pairs exported for that one target only (go test / the prebuilt binary and the
+# reverify replay). Use it for a reviewed, per-target knob such as KX_HOSTILE_ALLOW=O7 on a harness
+# whose generic oracle is documented as echo-class: a global export would also switch the check
+# off for every other target. Malformed tokens are logged and skipped, never run.
+TARGET_ENV=()
+target_env() {
+  local var="ENV_${1}" tok
+  TARGET_ENV=()
+  for tok in ${!var:-}; do
+    if [[ "$tok" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+      TARGET_ENV+=("$tok")
+    else
+      log "$var: ignoring malformed token '$tok' (want KEY=VALUE)"
+    fi
+  done
+}
+
 run_slice() {
   local pkg="$1" fn="$2" dur="$3" info slug dir gocache mt
   local -a extra=()
   # Optional 4th arg: the minimize cap already resolved by the caller (main
   # resolves it once so it can log the decision); empty = Go's default.
   mt="${4:-}"
+  target_env "$fn"
   if [ "${FUZZ_PREBUILT:-0}" = 1 ] && [ -n "$PREBUILT_ACTIVE_SHA" ]; then
     info="$(prebuilt_pkg_info "$pkg")"
     if [ -n "$info" ]; then
       slug="${info%%$'\t'*}"; dir="${info#*$'\t'}"
       gocache="$(go env GOCACHE)"
       [ -n "$mt" ] && extra=(-test.fuzzminimizetime="$mt")
-      ( cd "$dir" && exec "$(prebuilt_dir)/$PREBUILT_ACTIVE_SHA/$slug.test" \
+      ( cd "$dir" && { [ "${#TARGET_ENV[@]}" -eq 0 ] || export "${TARGET_ENV[@]}"; } && exec "$(prebuilt_dir)/$PREBUILT_ACTIVE_SHA/$slug.test" \
           -test.paniconexit0 \
           -test.fuzzcachedir="$gocache/fuzz/$pkg" \
           -test.timeout=10m0s \
@@ -713,7 +732,12 @@ run_slice() {
     fi
   fi
   [ -n "$mt" ] && extra=(-fuzzminimizetime="$mt")
-  go test "$pkg" -run='^$' -fuzz="^${fn}\$" -parallel="$PARALLEL" -fuzztime="$dur" ${extra[@]+"${extra[@]}"}
+  # Subshell + export (not the external `env`): the target's variables reach go test and
+  # nothing else, and `go` stays a shell-function seam for the tests.
+  (
+    [ "${#TARGET_ENV[@]}" -eq 0 ] || export "${TARGET_ENV[@]}"
+    go test "$pkg" -run='^$' -fuzz="^${fn}\$" -parallel="$PARALLEL" -fuzztime="$dur" ${extra[@]+"${extra[@]}"}
+  )
 }
 
 # filter_targets: drop any "pkg|Func" whose Func is listed in $EXCLUDE
@@ -902,7 +926,11 @@ _new_repro_dir() {
 reproducer_reverifies() {
   local fn="$1" pkg="$2" i
   for ((i=1; i<=${REVERIFY_RUNS:-1}; i++)); do
-    if ! go test "$pkg" -run="^${fn}\$" -timeout="${REVERIFY_TIMEOUT:-2m}" >>"$LOG_DIR/${fn}.reverify.log" 2>&1; then
+    target_env "$fn"
+    if ! (
+        [ "${#TARGET_ENV[@]}" -eq 0 ] || export "${TARGET_ENV[@]}"
+        go test "$pkg" -run="^${fn}\$" -timeout="${REVERIFY_TIMEOUT:-2m}"
+      ) >>"$LOG_DIR/${fn}.reverify.log" 2>&1; then
       return 0   # re-failed → real crash
     fi
   done
