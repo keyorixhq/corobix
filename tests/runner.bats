@@ -859,6 +859,7 @@ _stub_curl() {
   NOTIFY_URL=
   notify_crash "x" FuzzN
   [ -z "$(cat "$CURL_ARGS_FILE")" ]
+}
 
 # --- target_env / ENV_<fn>: per-target environment, never global ---------------------------
 
@@ -887,12 +888,20 @@ _stub_curl() {
   LOG_DIR="$BATS_TEST_TMPDIR"
   FUZZ_PREBUILT=0 PARALLEL=2
   ENV_FuzzAws="KX_HOSTILE_ALLOW=O7"
-  env() { printf '%s\n' "$@" >"$BATS_TEST_TMPDIR/env.args"; }
+  go() { printf 'KX_HOSTILE_ALLOW=%s\n' "${KX_HOSTILE_ALLOW:-unset}" >"$BATS_TEST_TMPDIR/go.seen"; }
   run_slice example.com/p FuzzAws 1s ""
-  run cat "$BATS_TEST_TMPDIR/env.args"
-  [[ "$output" == *"KX_HOSTILE_ALLOW=O7"* ]]
-  [[ "$output" == *"-fuzz=^FuzzAws\$"* ]]
+  run cat "$BATS_TEST_TMPDIR/go.seen"
+  [ "$output" = "KX_HOSTILE_ALLOW=O7" ]
   run_slice example.com/p FuzzOther 1s ""
-  run cat "$BATS_TEST_TMPDIR/env.args"
-  [[ "$output" != *"KX_HOSTILE_ALLOW"* ]]
+  run cat "$BATS_TEST_TMPDIR/go.seen"
+  [ "$output" = "KX_HOSTILE_ALLOW=unset" ]
+}
+
+@test "reproducer_reverifies replays with the target's env" {
+  LOG_DIR="$BATS_TEST_TMPDIR"
+  ENV_FuzzAws="KX_HOSTILE_ALLOW=O7"
+  go() { printf 'KX_HOSTILE_ALLOW=%s\n' "${KX_HOSTILE_ALLOW:-unset}" >"$BATS_TEST_TMPDIR/go.seen"; return 0; }
+  run reproducer_reverifies FuzzAws example.com/p
+  run cat "$BATS_TEST_TMPDIR/go.seen"
+  [ "$output" = "KX_HOSTILE_ALLOW=O7" ]
 }

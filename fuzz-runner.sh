@@ -719,7 +719,7 @@ run_slice() {
       slug="${info%%$'\t'*}"; dir="${info#*$'\t'}"
       gocache="$(go env GOCACHE)"
       [ -n "$mt" ] && extra=(-test.fuzzminimizetime="$mt")
-      ( cd "$dir" && exec env ${TARGET_ENV[@]+"${TARGET_ENV[@]}"} "$(prebuilt_dir)/$PREBUILT_ACTIVE_SHA/$slug.test" \
+      ( cd "$dir" && { [ "${#TARGET_ENV[@]}" -eq 0 ] || export "${TARGET_ENV[@]}"; } && exec "$(prebuilt_dir)/$PREBUILT_ACTIVE_SHA/$slug.test" \
           -test.paniconexit0 \
           -test.fuzzcachedir="$gocache/fuzz/$pkg" \
           -test.timeout=10m0s \
@@ -732,7 +732,12 @@ run_slice() {
     fi
   fi
   [ -n "$mt" ] && extra=(-fuzzminimizetime="$mt")
-  env ${TARGET_ENV[@]+"${TARGET_ENV[@]}"} go test "$pkg" -run='^$' -fuzz="^${fn}\$" -parallel="$PARALLEL" -fuzztime="$dur" ${extra[@]+"${extra[@]}"}
+  # Subshell + export (not the external `env`): the target's variables reach go test and
+  # nothing else, and `go` stays a shell-function seam for the tests.
+  (
+    [ "${#TARGET_ENV[@]}" -eq 0 ] || export "${TARGET_ENV[@]}"
+    go test "$pkg" -run='^$' -fuzz="^${fn}\$" -parallel="$PARALLEL" -fuzztime="$dur" ${extra[@]+"${extra[@]}"}
+  )
 }
 
 # filter_targets: drop any "pkg|Func" whose Func is listed in $EXCLUDE
@@ -922,7 +927,10 @@ reproducer_reverifies() {
   local fn="$1" pkg="$2" i
   for ((i=1; i<=${REVERIFY_RUNS:-1}; i++)); do
     target_env "$fn"
-    if ! env ${TARGET_ENV[@]+"${TARGET_ENV[@]}"} go test "$pkg" -run="^${fn}\$" -timeout="${REVERIFY_TIMEOUT:-2m}" >>"$LOG_DIR/${fn}.reverify.log" 2>&1; then
+    if ! (
+        [ "${#TARGET_ENV[@]}" -eq 0 ] || export "${TARGET_ENV[@]}"
+        go test "$pkg" -run="^${fn}\$" -timeout="${REVERIFY_TIMEOUT:-2m}"
+      ) >>"$LOG_DIR/${fn}.reverify.log" 2>&1; then
       return 0   # re-failed → real crash
     fi
   done
