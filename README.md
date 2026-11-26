@@ -219,6 +219,7 @@ examples/{libs,dashdiag,keyorix}.conf
 templates/fuzz-rig.service.tmpl    systemd unit template
 tests/runner.bats                  unit tests for the pure functions
 scripts/check.sh                   local pre-PR gate (shellcheck + bats + go vet + govulncheck)
+scripts/sat-summary.sh [-t N] [rig]  per rig: targets saturated / active / young (<3 runs), from each rig's sat/ history over ssh
 targets/{libs,libs-extra}/         standalone third-party-lib fuzz target modules
 ```
 
