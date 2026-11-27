@@ -940,6 +940,35 @@ reproducer_reverifies() {
 # quarantine_unverified <fn> -> keep a LOCAL copy of a reproducer that did not re-verify,
 # under FINDINGS_DIR/<fn>/unverified-<ts>/, so a rare flaky-but-real crash is never lost —
 # it is just not paged or pushed to the shared crasher repo on a single clean replay.
+# report_crash_issue REPO TITLE BODY TS RC DEST - file a crash in the issue channel.
+# An OPEN issue with the same title gets a "Seen again" comment. A CLOSED one
+# does not: a crash that comes back after the issue was closed is a regression
+# (or a variant the fix missed), and a comment on a closed issue never shows up
+# as open work (fuzz-corpus#179 / #188, 2026-11-26). So a closed match gets a
+# NEW issue that points back at it. Newest issue first (the API default), so the
+# first title match decides.
+report_crash_issue() {
+  local repo="$1" title="$2" body="$3" ts="$4" rc="$5" dest="$6" hit num state
+  hit="$(gh api "repos/$repo/issues?state=all&labels=vcd-auto&per_page=100" \
+    --jq ".[] | select(.title == \"$title\") | \"\(.number) \(.state)\"" 2>/dev/null | head -1)"
+  num="${hit%% *}"; state="${hit##* }"
+  if [ -n "$num" ] && [ "$state" = "open" ]; then
+    gh api -X POST "repos/$repo/issues/$num/comments" -f body="Seen again ($ts, rc=$rc).
+
+$body" >/dev/null 2>&1 \
+      || log "issue comment failed (non-fatal) on #$num - reproducer kept local -> $dest"
+    return 0
+  fi
+  if [ -n "$num" ]; then
+    body="Regression of #$num (closed): the same target crashed again ($ts, rc=$rc).
+
+$body"
+  fi
+  gh api -X POST "repos/$repo/issues" -f title="$title" -f body="$body" -f "labels[]=vcd-auto" \
+    >/dev/null 2>&1 \
+    || log "issue create failed (non-fatal) on $repo - reproducer kept local -> $dest"
+}
+
 quarantine_unverified() {
   local fn="$1" ts src dest
   ts="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -1027,19 +1056,7 @@ handle_crash() { # $1=fn $2=pkg $3=rc ; called only when a real reproducer exist
         if [ -z "$issue_repo" ]; then
           log "issue mode: could not determine ISSUE_REPO (set it explicitly) — reproducer kept local -> $dest"
         else
-          title="fuzz(crash): $fn"
-          existing="$(gh api "repos/$issue_repo/issues?state=all&labels=vcd-auto&per_page=100" \
-            --jq ".[] | select(.title == \"$title\") | .number" 2>/dev/null | head -1)"
-          if [ -n "$existing" ]; then
-            gh api -X POST "repos/$issue_repo/issues/$existing/comments" -f body="Seen again ($ts, rc=$rc).
-
-$body" >/dev/null 2>&1 \
-              || log "issue comment failed (non-fatal) on #$existing — reproducer kept local -> $dest"
-          else
-            gh api -X POST "repos/$issue_repo/issues" -f title="$title" -f body="$body" -f "labels[]=vcd-auto" \
-              >/dev/null 2>&1 \
-              || log "issue create failed (non-fatal) on $issue_repo — reproducer kept local -> $dest"
-          fi
+          report_crash_issue "$issue_repo" "fuzz(crash): $fn" "$body" "$ts" "$rc" "$dest"
         fi
       else
         log "gh not available — cannot open issue; reproducer kept local -> $dest"
